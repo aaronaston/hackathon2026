@@ -1,97 +1,148 @@
 # Clinical Document Indexing Sandbox
 
-This repository is a working sandbox for experiments in clinical document indexing, query, and retrieval.
+This repository is a sandbox for clinical document indexing, query, and retrieval experiments.
 
-## Current Direction
-The project focus is building and validating workflows for:
-- Parsing healthcare documents into structured fields
-- Indexing extracted content for search and retrieval
-- Testing query behavior across realistic clinical-style records
+## Objective
+Build and evaluate a lightweight retrieval system over clinical-style documents (currently synthetic IPS-style patient summaries), with an interactive agent interface for question answering.
 
-Everything created so far is setup/background data for that core effort.
+## Architecture Framework Alignment
+This README follows your preferred architecture framing (coverage + process + representation), inspired by C4, TOGAF ADM, and Zachman.
+Reference framework: https://github.com/aaronaston/architecture/blob/main/docs/architecture-framework.md
 
-## Current Data Assets
+### Coverage (What / How / Where / Who / When / Why)
+- What: Synthetic patient markdown documents and reference clinical forms.
+- How: Python CLI app using LlamaIndex + OpenAI, with in-memory indexing and tool-based agent retrieval.
+- Where: Local workstation, local filesystem, OpenAI API.
+- Who: Developer/operator running scripts and querying the agent.
+- When: Reindex on every startup; no persistence across restarts.
+- Why: Fast iteration for extraction/indexing/retrieval experiments without data lifecycle complexity.
+
+### Process (ADM-Inspired)
+- Phase A (Vision): Validate clinical retrieval patterns quickly.
+- Phase B/C (Business + Information Systems): Represent each patient summary as a whole-document retrieval unit.
+- Phase D (Technology): Use Python venv + LlamaIndex + OpenAI.
+- Phase E/F (Opportunities + Migration): Evolve from in-memory CLI to service/API + persistent index when evaluation stabilizes.
+- Phase G/H (Governance + Change): Keep scripts deterministic and test-data-only; restart refreshes state.
+
+### Representation (C4-Oriented)
+- System Context:
+  - Actor: User in terminal.
+  - System: `patient_index_agent.py`.
+  - External dependency: OpenAI API (LLM + embeddings).
+  - Data source: `test-data/patients/*.md`.
+- Container View:
+  - One Python process hosting index build, query engine, and agent loop.
+- Component View:
+  - Index builder: reads markdown, creates one `TextNode` per file.
+  - Retrieval tool: semantic search over `VectorStoreIndex`.
+  - Agent: `FunctionAgent` with chat context and tool use.
+  - CLI shell: readline-backed interactive prompt with message history.
+
+## Current Solution Design
+
+### Data Assets
 - `reference/forms`
   - Source clinical forms (for example Ontario lab requisition PDFs)
 - `test-data/patients`
-  - 30 synthetic IPS-style patient summaries in markdown
-- `scripts/fill_lab_req_sample.py`
-  - Utility used to populate an Ontario lab requisition PDF sample
+  - 30 synthetic IPS-style patient summaries
+- `test-data/OntarioLabReq-4422-84-sample-filled.pdf`
+  - Generated filled example for parsing/indexing experiments
+
+### Scripts
 - `scripts/generate_patients.py`
-  - Generator for the synthetic patient markdown cohort
-- `generating-test-patients.md`
-  - Method notes and source references for patient data generation
+  - Regenerates synthetic patient summaries in `test-data/patients`
+- `scripts/fill_lab_req_sample.py`
+  - Fills the Ontario lab requisition sample PDF
+- `scripts/patient_index_agent.py`
+  - Builds in-memory index and starts interactive retrieval agent
+- `scripts/setup_venv.sh`
+  - Creates `.venv` and installs dependencies
+- `start-agent.sh`
+  - Convenience launcher for environment + API key + agent startup
+
+## LlamaIndex Usage Details
+The agent implementation in `scripts/patient_index_agent.py` uses:
+- `VectorStoreIndex`
+  - Built from explicit `TextNode` objects.
+  - Node granularity is full file, one node per patient markdown file (no chunk splitting).
+- Query engine
+  - Created via `index.as_query_engine(similarity_top_k=4)`.
+- Agent
+  - `FunctionAgent` with tools:
+    - `search_patient_documents(query)`
+    - `count_patient_documents()`
+  - `Context(agent)` is preserved for the process lifetime to maintain chat history.
+- Citations
+  - Tool output includes source file citations with full absolute paths.
+- Persistence model
+  - No vector store persistence.
+  - Restarting the process rebuilds index from filesystem.
+
+## Runtime Flow
+1. Start script loads environment and API key.
+2. Agent script reads all patient markdown files.
+3. Index is built in memory.
+4. User asks questions in terminal.
+5. Agent invokes retrieval tool(s), then returns response.
+6. Tool output is printed in faded/dim text for visibility.
+7. Session history remains in memory only.
 
 ## Python Environment
 This project uses a local virtual environment at `.venv`.
 
-Create/update the environment and install all Python dependencies:
+Create/update environment and install dependencies:
 
 ```bash
 scripts/setup_venv.sh
 ```
 
-This installs:
-- LlamaIndex + OpenAI integrations for indexing and agent workflows
-- Existing PDF/form tooling dependencies (`pypdf`, `cryptography`, `pymupdf`)
+Dependencies are defined in `requirements.txt` and include:
+- LlamaIndex (`llama-index`, `llama-index-llms-openai`, `llama-index-embeddings-openai`)
+- OpenAI SDK (`openai`)
+- Existing PDF/form utilities (`pypdf`, `cryptography`, `pymupdf`)
 
-## Working with the Patient Dataset
-Regenerate the patient summaries:
+## Start the Agent
+From repo root:
 
 ```bash
-python3 scripts/generate_patients.py
+chmod u+x start-agent.sh
+./start-agent.sh
 ```
 
-This writes files to `test-data/patients`.
+Notes:
+- `chmod u+x start-agent.sh` is only needed if executable permission is missing.
+- `start-agent.sh` will create `.venv` automatically if it does not exist.
+- Put your key in `.env`:
 
-## Patient Search Agent (In-Memory)
-Run the interactive agent with chat history:
+```bash
+OPENAI_API_KEY=your_key_here
+```
+
+## Working with Test Data
+Regenerate synthetic patients:
 
 ```bash
 source .venv/bin/activate
-export OPENAI_API_KEY=your_key_here
-python3 scripts/patient_index_agent.py
+python3 scripts/generate_patients.py
 ```
 
-Behavior:
-- Indexes all markdown files in `test-data/patients`
-- Uses one vector node per file (full document, no chunk splitting)
-- Runs an agent with tool-based search over the index
-- Maintains chat history for the current process/session via agent context
-- Does not persist index state to disk (restart = full refresh/reindex)
-
-## Filling a Sample Ontario Lab Requisition
-Use `scripts/fill_lab_req_sample.py` to populate a sample copy of the Ontario lab requisition form.
-
-Prerequisites:
-- Python 3.11+
-- Project dependencies installed (`scripts/setup_venv.sh`)
-
-Run from repo root:
+Generate filled Ontario requisition sample:
 
 ```bash
 source .venv/bin/activate
 python3 scripts/fill_lab_req_sample.py
 ```
 
-Input/output:
-- Input PDF: `reference/forms/OntarioLabReq-4422-84.pdf`
-- Output PDF: `test-data/OntarioLabReq-4422-84-sample-filled.pdf`
+Input/output for form fill:
+- Input: `reference/forms/OntarioLabReq-4422-84.pdf`
+- Output: `test-data/OntarioLabReq-4422-84-sample-filled.pdf`
 
-Customize the sample:
-- Edit the `field_values` dictionary in `scripts/fill_lab_req_sample.py`.
-- Text fields accept strings.
-- Checkbox/radio fields require their PDF state values (for example `/Yes`, `/M`, `/ohip`, `/fasting`).
-- Keep duplicate demographic fields aligned (`patienFname`/`fname`, `patienLname`/`lname`, DOB fields) so both parts of the form are consistent.
-- Keep `Health Number` to the form field max length (10 characters in this form).
-
-## Near-Term Next Steps
-1. Define a canonical document schema for parsed output (patient, encounter, orders, observations, provenance).
-2. Build parsers/extractors for each document type in `reference/forms`.
-3. Stand up an index layer and retrieval API (keyword + structured filters).
-4. Create evaluation queries and expected-answer fixtures to measure retrieval quality.
-5. Add regression tests so extraction/index changes are measurable and safe.
+## Non-Goals (Current Stage)
+- No production security hardening.
+- No persistent vector database.
+- No multi-user session management.
+- No formal PHI pipeline.
 
 ## Data Safety
-- Treat all content here as test/synthetic unless explicitly marked otherwise.
-- Do not add real PHI/PII without explicit governance and controls.
+- Treat repository content as test/synthetic unless explicitly marked otherwise.
+- Do not add real PHI/PII without governance, controls, and legal approval.
