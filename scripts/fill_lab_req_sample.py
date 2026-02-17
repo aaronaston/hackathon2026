@@ -1,8 +1,8 @@
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject, BooleanObject
 
-input_pdf = 'OntarioLabReq-4422-84.pdf'
-output_pdf = 'OntarioLabReq-4422-84-sample-filled.pdf'
+input_pdf = 'reference/forms/OntarioLabReq-4422-84.pdf'
+output_pdf = 'test-data/OntarioLabReq-4422-84-sample-filled.pdf'
 
 reader = PdfReader(input_pdf)
 if reader.is_encrypted:

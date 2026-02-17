@@ -1,0 +1,7 @@
+llama-index==0.14.8
+llama-index-llms-openai==0.6.9
+llama-index-embeddings-openai==0.5.1
+openai==2.6.1
+pypdf==6.7.0
+cryptography==46.0.5
+pymupdf==1.27.1

@@ -22,6 +22,19 @@ Everything created so far is setup/background data for that core effort.
 - `generating-test-patients.md`
   - Method notes and source references for patient data generation
 
+## Python Environment
+This project uses a local virtual environment at `.venv`.
+
+Create/update the environment and install all Python dependencies:
+
+```bash
+scripts/setup_venv.sh
+```
+
+This installs:
+- LlamaIndex + OpenAI integrations for indexing and agent workflows
+- Existing PDF/form tooling dependencies (`pypdf`, `cryptography`, `pymupdf`)
+
 ## Working with the Patient Dataset
 Regenerate the patient summaries:
 
@@ -31,28 +44,39 @@ python3 scripts/generate_patients.py
 
 This writes files to `test-data/patients`.
 
+## Patient Search Agent (In-Memory)
+Run the interactive agent with chat history:
+
+```bash
+source .venv/bin/activate
+export OPENAI_API_KEY=your_key_here
+python3 scripts/patient_index_agent.py
+```
+
+Behavior:
+- Indexes all markdown files in `test-data/patients`
+- Uses one vector node per file (full document, no chunk splitting)
+- Runs an agent with tool-based search over the index
+- Maintains chat history for the current process/session via agent context
+- Does not persist index state to disk (restart = full refresh/reindex)
+
 ## Filling a Sample Ontario Lab Requisition
 Use `scripts/fill_lab_req_sample.py` to populate a sample copy of the Ontario lab requisition form.
 
 Prerequisites:
 - Python 3.11+
-- `pypdf` and `cryptography`
-
-Install dependencies:
-
-```bash
-python3 -m pip install --user pypdf cryptography
-```
+- Project dependencies installed (`scripts/setup_venv.sh`)
 
 Run from repo root:
 
 ```bash
+source .venv/bin/activate
 python3 scripts/fill_lab_req_sample.py
 ```
 
 Input/output:
-- Input PDF: `OntarioLabReq-4422-84.pdf` (repo root)
-- Output PDF: `OntarioLabReq-4422-84-sample-filled.pdf` (repo root)
+- Input PDF: `reference/forms/OntarioLabReq-4422-84.pdf`
+- Output PDF: `test-data/OntarioLabReq-4422-84-sample-filled.pdf`
 
 Customize the sample:
 - Edit the `field_values` dictionary in `scripts/fill_lab_req_sample.py`.
