@@ -116,6 +116,22 @@ def chunk_patient_file(path: Path) -> list[TextNode]:
         # for chunks whose content is "No known drug allergies."
         embed_text = f"Patient: {patient_name} | Section: {section}\n{content_body}"
 
+        # For the Patient section, enrich embed text with resolved country/province name
+        # so queries like "patients in Canada" or "patients in Ontario" resolve correctly.
+        # Patient files only store province codes (e.g. "ON") — the word "Canada" never appears.
+        _CA_PROVINCES = {
+            "ON": "Ontario", "BC": "British Columbia", "AB": "Alberta",
+            "QC": "Quebec", "MB": "Manitoba", "SK": "Saskatchewan",
+            "NS": "Nova Scotia", "NB": "New Brunswick", "NL": "Newfoundland",
+            "PE": "Prince Edward Island", "YT": "Yukon", "NT": "Northwest Territories",
+            "NU": "Nunavut",
+        }
+        if section == "Patient":
+            for code, province_name in _CA_PROVINCES.items():
+                if f", {code} " in content_body or f", {code}\n" in content_body:
+                    embed_text += f"\nCountry: Canada | Province: {province_name}"
+                    break
+
         node_meta = {
             **shared_meta,
             "section": section,
@@ -272,22 +288,76 @@ async def run_chat() -> None:
         print_faded(f"[tool] count_patient_documents() -> {n}")
         return n
 
+    def scan_all_patients(keyword: str, section_filter: str = "") -> str:
+        """
+        Exhaustive full-scan of ALL patient section-chunks for a keyword.
+        Use this instead of search_patient_documents when the user asks:
+        - 'list ALL patients who...' / 'show ALL patients with...'
+        - questions about demographics (location, age, sex, ethnicity)
+        - questions where completeness matters more than ranking
+
+        Unlike search_patient_documents, this has NO top-K cap and returns
+        every chunk that contains the keyword in its embedded text.
+
+        Args:
+            keyword: word or phrase to scan for (case-insensitive)
+            section_filter: if provided, only scan chunks from this section
+                           (e.g. 'Patient', 'Social History', 'Problem List')
+        """
+        print_faded(f"\n[tool] scan_all_patients(keyword={keyword!r}, section_filter={section_filter!r})")
+        kw = keyword.lower()
+        section_f = section_filter.lower()
+
+        matches = []
+        seen_patients = set()
+        for node in nodes:
+            meta = node.metadata
+            section = meta.get("section", "")
+            if section_f and section_f not in section.lower():
+                continue
+            text_lower = node.text.lower()
+            if kw in text_lower:
+                patient = meta.get("patient_name", "?")
+                fname = meta.get("file_name", "?")
+                preview = meta.get("content_preview", node.text[:80])
+                key = (patient, section)
+                if key not in seen_patients:
+                    seen_patients.add(key)
+                    matches.append(f"• {patient} ({fname} § {section}): {preview}")
+
+        print_faded(f"[tool] scan found {len(matches)} matching chunk(s)")
+        if not matches:
+            return f"No patients found matching keyword '{keyword}'" + (
+                f" in section '{section_filter}'" if section_filter else ""
+            )
+        return (
+            f"Found {len(matches)} match(es) for '{keyword}':\n" +
+            "\n".join(matches)
+        )
+
     agent = FunctionAgent(
-        tools=[search_patient_documents, count_patient_documents],
+        tools=[search_patient_documents, scan_all_patients, count_patient_documents],
         llm=llm,
         system_prompt=(
             "You are a clinical document assistant for an EMR system. "
-            "Use the search_patient_documents tool to answer questions about patients. "
-            "\n\nCRITICAL NEGATION RULE: The tool returns chunks tagged as either "
+            "You have two search tools:\n"
+            "1. search_patient_documents(query) — hybrid semantic+BM25 search with reranking. "
+            "Best for clinical questions (diagnoses, medications, lab results) where the top "
+            "few most relevant matches matter. Returns at most 4 results.\n"
+            "2. scan_all_patients(keyword, section_filter) — exhaustive full-scan with NO result cap. "
+            "Use this whenever the user asks to list ALL patients, or asks about demographics "
+            "(location/city/country, age, sex, ethnicity) or any question where completeness is critical. "
+            "For location queries use section_filter='Patient'.\n\n"
+            "CRITICAL NEGATION RULE: search_patient_documents returns chunks tagged as either "
             "[POSITIVE FINDING] or [NEGATIVE / no finding]. "
-            "When a user asks 'which patients have X', you MUST ONLY count patients whose chunk "
-            "is tagged [POSITIVE FINDING] and whose content actually describes X. "
-            "A chunk saying 'No known allergies' or 'No known drug allergies' is a NEGATIVE — "
-            "it means the patient does NOT have the condition. Never list such patients as having the condition. "
-            "\n\nWhen citing evidence always mention the patient name, the document section, and file name. "
+            "When a user asks 'which patients have X', ONLY count [POSITIVE FINDING] chunks "
+            "whose content actually describes X. "
+            "A chunk saying 'No known allergies' is a NEGATIVE — never list that patient as having the condition.\n\n"
+            "When citing evidence always mention the patient name, document section, and file name. "
             "If you are unsure, say so — do not invent patient information."
         ),
     )
+
 
     ctx = Context(agent)
 
