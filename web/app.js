@@ -297,7 +297,6 @@ function openEncounterDialog(patient, highlight) {
 }
 
 function applyDialogHighlight(hl) {
-  console.log("[highlight] applyDialogHighlight called with:", JSON.stringify(hl));
   const { date, section, preview } = hl;
 
   // -- Patient-summary source (no encounter date) --
@@ -306,6 +305,7 @@ function applyDialogHighlight(hl) {
       "problem list": els.dialogProblemList,
       "allergies": els.dialogAllergies,
       "medications": els.dialogMeds,
+      "medication summary": els.dialogMeds,
     };
     const key = Object.keys(sectionMap).find((k) => section.toLowerCase().includes(k));
     if (key) {
@@ -318,132 +318,75 @@ function applyDialogHighlight(hl) {
   }
 
   // -- Encounter source --
-  if (!date) { console.log("[highlight] No date, skipping encounter search"); return; }
-  const items = els.dialogEncounterList.querySelectorAll(".encounter-item");
-  console.log("[highlight] Looking for date:", date, "in", items.length, "encounter items");
-  console.log("[highlight] Available dates:", [...items].map(i => i.dataset.date));
-  for (const item of items) {
-    if (item.dataset.date !== date) continue;
-    console.log("[highlight] Found matching encounter item for date:", date);
-    item.classList.add("highlighted");
+  if (!date) return;
+  const item = [...els.dialogEncounterList.querySelectorAll(".encounter-item")]
+    .find((el) => el.dataset.date === date);
+  if (!item) return;
 
-    if (!section) {
-      item.scrollIntoView({ behavior: "smooth", block: "center" });
-      return;
-    }
+  item.classList.add("highlighted");
 
-    const sectionLower = section.toLowerCase();
-    let targetP = null;
+  // Always expand details so we can search the full text
+  const details = item.querySelector("details");
+  if (details) details.open = true;
 
-    // 1. Try the full-note details sections (most specific)
-    const details = item.querySelector("details");
-    if (details) {
-      for (const p of details.querySelectorAll("p")) {
-        const strong = p.querySelector("strong");
-        const strongText = strong ? strong.textContent.toLowerCase().replace(":", "").trim() : "";
-        console.log("[highlight] Checking details <strong>:", strongText, "vs", sectionLower);
-        if (strong && strongText === sectionLower) {
-          details.open = true;
-          targetP = p;
-          console.log("[highlight] Matched details section:", strongText);
-          break;
-        }
-      }
-    }
-
-    // 2. Try visible summary paragraphs
-    if (!targetP) {
-      for (const p of item.querySelectorAll(".encounter-summary p")) {
-        console.log("[highlight] Checking summary p text:", p.textContent.substring(0, 60));
-        if (p.textContent.toLowerCase().includes(sectionLower)) {
-          targetP = p;
-          console.log("[highlight] Matched summary paragraph");
-          break;
-        }
-      }
-    }
-
-    // 3. Try the encounter header (for "Encounter Header" sections)
-    if (!targetP && sectionLower.includes("header")) {
-      targetP = item.querySelector(".encounter-top");
-      console.log("[highlight] Matched encounter header");
-    }
-
-    if (targetP) {
-      targetP.classList.add("highlight-section");
-      console.log("[highlight] Target paragraph textContent:", targetP.textContent.substring(0, 120));
-      console.log("[highlight] Preview to match:", preview ? preview.substring(0, 80) : "(none)");
-      if (preview) {
-        const matched = tryHighlightText(targetP, preview);
-        console.log("[highlight] tryHighlightText result:", matched);
-      }
-      targetP.scrollIntoView({ behavior: "smooth", block: "center" });
-    } else {
-      console.log("[highlight] No matching section found for:", sectionLower);
-      item.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-    return;
+  // 1. Try text-level highlighting across the ENTIRE encounter item
+  let textFound = false;
+  if (preview) {
+    textFound = tryHighlightText(item, preview);
   }
-  console.log("[highlight] No encounter item found for date:", date);
+
+  // 2. If text matching missed, apply section-level highlighting as fallback
+  if (!textFound && section) {
+    const sectionLower = section.toLowerCase();
+    for (const p of item.querySelectorAll("p")) {
+      const strong = p.querySelector("strong");
+      if (!strong) continue;
+      const label = strong.textContent.toLowerCase().replace(/[:\s]+$/g, "");
+      if (label === sectionLower || label.includes(sectionLower) || sectionLower.includes(label)) {
+        p.classList.add("highlight-section");
+        break;
+      }
+    }
+  }
+
+  // 3. Scroll to the most specific highlighted element
+  const scrollTarget = item.querySelector(".cite-highlight")
+    || item.querySelector(".highlight-section")
+    || item;
+  setTimeout(() => scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
 }
 
 function tryHighlightText(container, preview) {
   if (!preview || !container) return false;
 
-  // Build a list of candidate search strings from the preview:
-  // 1. The raw preview at various lengths (handles exact matches)
-  // 2. Distinct phrases split on sentence/clause boundaries (handles partial matches)
+  // Build candidates: raw substrings + phrase fragments
   const raw = preview.trim();
-  const phrases = raw
-    .split(/[.;,\n]+/)
-    .map((p) => p.trim())
-    .filter((p) => p.length >= 12)
-    .sort((a, b) => b.length - a.length);
+  const phrases = raw.split(/[.;,\n]+/).map((p) => p.trim()).filter((p) => p.length >= 8);
+  phrases.sort((a, b) => b.length - a.length);
 
   const candidates = [
     raw.substring(0, 80),
     raw.substring(0, 50),
     raw.substring(0, 30),
     ...phrases.slice(0, 4),
-  ].filter((c) => c && c.length >= 10);
+  ].filter((c) => c && c.length >= 8);
 
   for (const candidate of candidates) {
-    const search = candidate.toLowerCase().replace(/\s+/g, " ");
+    const search = candidate.toLowerCase();
 
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
       const node = walker.currentNode;
-      // Normalize target whitespace for matching, but track original positions
-      const origText = node.textContent;
-      const normText = origText.replace(/\s+/g, " ").toLowerCase();
-      const idx = normText.indexOf(search);
+      // Skip text inside <summary> or <strong> labels
+      if (node.parentElement.closest("summary, strong")) continue;
+
+      const text = node.textContent.toLowerCase();
+      const idx = text.indexOf(search);
       if (idx < 0) continue;
 
-      // Map normalized position back to original text position
-      let origIdx = 0, normCount = 0;
-      while (normCount < idx && origIdx < origText.length) {
-        if (/\s/.test(origText[origIdx]) && origIdx > 0 && /\s/.test(origText[origIdx - 1])) {
-          origIdx++;
-          continue; // skip extra whitespace chars that collapse to nothing in normalized
-        }
-        origIdx++;
-        normCount++;
-      }
-
-      // Find the original end position
-      let origEnd = origIdx, matchNorm = 0;
-      while (matchNorm < search.length && origEnd < origText.length) {
-        if (/\s/.test(origText[origEnd]) && origEnd > origIdx && /\s/.test(origText[origEnd - 1])) {
-          origEnd++;
-          continue;
-        }
-        origEnd++;
-        matchNorm++;
-      }
-
-      const matchLen = origEnd - origIdx;
-      const matchNode = origIdx > 0 ? node.splitText(origIdx) : node;
-      if (matchLen < matchNode.textContent.length) matchNode.splitText(matchLen);
+      // Found a match — split and wrap with <mark>
+      const matchNode = idx > 0 ? node.splitText(idx) : node;
+      if (candidate.length < matchNode.textContent.length) matchNode.splitText(candidate.length);
       const mark = document.createElement("mark");
       mark.className = "cite-highlight";
       matchNode.parentNode.insertBefore(mark, matchNode);

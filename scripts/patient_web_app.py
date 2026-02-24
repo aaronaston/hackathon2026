@@ -900,6 +900,8 @@ class Handler(SimpleHTTPRequestHandler):
                     kw = keyword.lower()
                     sf = section_filter.lower()
                     matches, seen = [], set()
+                    sources = []
+                    idx = 0
                     for node in nodes:
                         meta = node.metadata
                         section = meta.get("section", "")
@@ -911,7 +913,21 @@ class Handler(SimpleHTTPRequestHandler):
                             if key not in seen:
                                 seen.add(key)
                                 preview = meta.get("content_preview", node.text[:80])
-                                matches.append(f"• {patient} ({meta.get('file_name','?')} § {section}): {preview}")
+                                idx += 1
+                                matches.append(f"[{idx}] {patient} ({meta.get('file_name','?')} § {section}): {preview}")
+                                sources.append({
+                                    "index": idx,
+                                    "patient_name": patient,
+                                    "patient_id": meta.get("patient_id", ""),
+                                    "section": section,
+                                    "file_name": meta.get("file_name", ""),
+                                    "encounter_date": meta.get("encounter_date", ""),
+                                    "document_type": meta.get("document_type", "patient_summary"),
+                                    "preview": preview[:100],
+                                    "has_finding": meta.get("has_finding", True),
+                                })
+                    if sources:
+                        _send_event("sources", {"sources": sources})
                     if not matches:
                         return f"No patients found matching '{keyword}'"
                     return f"Found {len(matches)} match(es) for '{keyword}':\n" + "\n".join(matches)
