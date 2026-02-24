@@ -13,6 +13,9 @@ rank-bm25>=0.2.2
 
 # Reranking: LLMRerank is built into llama-index-core (no extra package needed)
 
+# Chart generation
+matplotlib>=3.8.0
+
 # Existing utilities
 openai==2.6.1
 pypdf==6.7.0
