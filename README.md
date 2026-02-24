@@ -133,6 +133,27 @@ Notes:
 OPENAI_API_KEY=your_key_here
 ```
 
+## Patient Web Explorer
+Run a local webpage for patient visualization, filtering, masked field reveal, and semantic-style search.
+
+Start server:
+
+```bash
+./start-web.sh
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8080
+```
+
+Features:
+- Semantic-style search (query expansion + weighted relevance scoring)
+- Filters: city, sex/gender, ethnicity, known allergy, age range
+- Masked sensitive fields (DOB, address, allergies, meds, diagnostics, social) with per-card eye reveal
+- Global reveal/hide toggle
+
 ## Working with Test Data
 Regenerate synthetic patients:
 
