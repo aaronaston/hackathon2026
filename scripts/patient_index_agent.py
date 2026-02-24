@@ -14,6 +14,7 @@ import asyncio
 import json
 import re
 import os
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -583,12 +584,22 @@ async def run_chat() -> None:
             plt.close(fig)
 
             print_faded(f"[tool] Chart saved to {chart_path}")
+
+            # Auto-open in the system viewer so the user doesn't need to find the file
+            import sys
+            try:
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", str(chart_path)])
+                else:
+                    subprocess.Popen(["xdg-open", str(chart_path)])
+            except Exception as open_err:
+                print_faded(f"[tool] Could not auto-open chart: {open_err}")
+
             return (
                 f"Chart generated for {patient_name} — {metric}\n"
                 f"Data points ({len(data_points)}): "
                 + ", ".join(f"{d.strftime('%Y-%m-%d')}: {v} {units}" for d, v in zip(dates, values))
-                + f"\n\nChart saved to: {chart_path}\n"
-                f"Open the file to view the chart."
+                + f"\n\nChart opened in your system viewer (also saved to: {chart_path})"
             )
 
         except Exception as e:
