@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clinical Patient Explorer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Clinical Sandbox</p>
+      <h1>Patient Explorer</h1>
+    </div>
+    <button id="toggleAllMask" class="ghost-btn" type="button" aria-pressed="false">
+      <span class="eye-icon" aria-hidden="true"></span>
+      <span class="toggle-label">Reveal All</span>
+    </button>
+  </header>
+
+  <section class="panel stats" id="stats"></section>
+
+  <section class="panel filters">
+    <div class="filter-grid">
+      <label>
+        Semantic Search
+        <input id="q" type="search" placeholder="Try: asthma child, diabetes sugar, anxiety mood" />
+      </label>
+
+      <label>
+        Location (City)
+        <select id="city">
+          <option value="">All cities</option>
+        </select>
+      </label>
+
+      <label>
+        Sex/Gender
+        <select id="sex_gender">
+          <option value="">All</option>
+        </select>
+      </label>
+
+      <label>
+        Ethnicity
+        <select id="ethnicity">
+          <option value="">All</option>
+        </select>
+      </label>
+
+      <label>
+        Known Allergy
+        <select id="known_allergy">
+          <option value="all">All</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </label>
+
+      <label>
+        Age Range
+        <div class="range-wrap">
+          <input id="min_age" type="number" min="0" max="120" placeholder="Min" />
+          <input id="max_age" type="number" min="0" max="120" placeholder="Max" />
+        </div>
+      </label>
+    </div>
+  </section>
+
+  <main id="results" class="results"></main>
+
+  <template id="card-template">
+    <article class="panel patient-card">
+      <div class="card-head">
+        <div>
+          <h2 class="name"></h2>
+          <p class="meta"></p>
+        </div>
+        <div class="head-actions">
+          <p class="score"></p>
+          <button class="eye-btn" type="button" aria-pressed="false" title="Reveal sensitive fields">
+            <span class="eye-icon" aria-hidden="true"></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="chips"></div>
+
+      <div class="grid">
+        <div>
+          <p class="label">Date of Birth</p>
+          <p class="field dob sensitive"></p>
+        </div>
+        <div>
+          <p class="label">Address</p>
+          <p class="field address sensitive"></p>
+        </div>
+        <div>
+          <p class="label">Allergies</p>
+          <p class="field allergies sensitive"></p>
+        </div>
+        <div>
+          <p class="label">Medications</p>
+          <p class="field meds sensitive"></p>
+        </div>
+      </div>
+
+      <details>
+        <summary>Clinical Details</summary>
+        <div class="detail-row">
+          <p><strong>Problem List:</strong> <span class="problem-list"></span></p>
+          <p><strong>Diagnostics:</strong> <span class="diagnostics sensitive"></span></p>
+          <p><strong>Social:</strong> <span class="social sensitive"></span></p>
+          <p><strong>Plan:</strong> <span class="plan"></span></p>
+        </div>
+      </details>
+    </article>
+  </template>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
