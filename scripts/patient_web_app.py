@@ -862,6 +862,32 @@ class Handler(SimpleHTTPRequestHandler):
 
                 # ---- Tools ----
 
+                def _keyword_snippet(text: str, keyword: str, window: int = 120) -> str:
+                    """Return a snippet of *text* centred on the first occurrence of *keyword*.
+
+                    Falls back to the beginning of the text if keyword is not found.
+                    """
+                    lower = text.lower()
+                    kw = keyword.lower()
+                    pos = lower.find(kw)
+                    if pos < 0:
+                        # Try individual words from multi-word keyword
+                        for word in kw.split():
+                            if len(word) >= 4:
+                                pos = lower.find(word)
+                                if pos >= 0:
+                                    break
+                    if pos < 0:
+                        return text[:window]
+                    start = max(0, pos - window // 3)
+                    end = min(len(text), pos + len(keyword) + window * 2 // 3)
+                    snippet = text[start:end].strip()
+                    if start > 0:
+                        snippet = "…" + snippet
+                    if end < len(text):
+                        snippet = snippet + "…"
+                    return snippet
+
                 async def search_patient_documents(query: str) -> str:
                     """Hybrid semantic+BM25 search across patient summaries and encounter SOAP notes."""
                     _send_event("tool_call", {"tool": "search", "query": query})
@@ -875,7 +901,7 @@ class Handler(SimpleHTTPRequestHandler):
                         section = meta.get("section", "?")
                         fname = meta.get("file_name", "?")
                         has_finding = meta.get("has_finding", True)
-                        preview = meta.get("content_preview", "")
+                        preview = _keyword_snippet(nws.node.text, query)
                         flag = "[POSITIVE FINDING]" if has_finding else "[NEGATIVE / no finding]"
                         chunk_lines.append(f"[{i+1}] {flag} Patient: {patient} | Section: {section} ({fname})\n  {preview}")
                         sources.append({
@@ -886,7 +912,8 @@ class Handler(SimpleHTTPRequestHandler):
                             "file_name": fname,
                             "encounter_date": meta.get("encounter_date", ""),
                             "document_type": meta.get("document_type", "patient_summary"),
-                            "preview": preview[:100],
+                            "preview": preview[:120],
+                            "query": query,
                             "has_finding": has_finding,
                         })
                     if sources:
@@ -912,7 +939,7 @@ class Handler(SimpleHTTPRequestHandler):
                             key = (patient, section)
                             if key not in seen:
                                 seen.add(key)
-                                preview = meta.get("content_preview", node.text[:80])
+                                preview = _keyword_snippet(node.text, keyword)
                                 idx += 1
                                 matches.append(f"[{idx}] {patient} ({meta.get('file_name','?')} § {section}): {preview}")
                                 sources.append({
@@ -923,7 +950,8 @@ class Handler(SimpleHTTPRequestHandler):
                                     "file_name": meta.get("file_name", ""),
                                     "encounter_date": meta.get("encounter_date", ""),
                                     "document_type": meta.get("document_type", "patient_summary"),
-                                    "preview": preview[:100],
+                                    "preview": preview[:120],
+                                    "query": keyword,
                                     "has_finding": meta.get("has_finding", True),
                                 })
                     if sources:

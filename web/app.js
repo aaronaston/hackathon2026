@@ -268,6 +268,17 @@ function openEncounterDialog(patient, highlight) {
   const revealed = state.revealAll || state.revealedIds.has(patient.id);
   const masked = !revealed;
 
+  // Clear any leftover highlights from a previous citation deep-link
+  for (const mark of els.encounterDialog.querySelectorAll("mark.cite-highlight")) {
+    mark.replaceWith(mark.textContent);
+  }
+  for (const el of els.encounterDialog.querySelectorAll(".highlight-section")) {
+    el.classList.remove("highlight-section");
+  }
+  for (const el of els.encounterDialog.querySelectorAll(".highlighted")) {
+    el.classList.remove("highlighted");
+  }
+
   els.dialogPatientName.textContent = patient.name || "Patient";
   els.dialogPatientMeta.textContent = `${patient.sex_gender || "Unknown"} | ${patient.ethnicity || "Unknown"} | ${patient.encounter_count || 0} encounters`;
   els.dialogProblemList.textContent = toText(patient.sections?.problem_list);
@@ -297,7 +308,7 @@ function openEncounterDialog(patient, highlight) {
 }
 
 function applyDialogHighlight(hl) {
-  const { date, section, preview } = hl;
+  const { date, section, preview, query } = hl;
 
   // -- Patient-summary source (no encounter date) --
   if (!date && section) {
@@ -311,7 +322,7 @@ function applyDialogHighlight(hl) {
     if (key) {
       const el = sectionMap[key];
       el.closest("div")?.classList.add("highlight-section");
-      if (preview) tryHighlightText(el, preview);
+      tryHighlightText(el, query, preview);
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
     return;
@@ -330,10 +341,7 @@ function applyDialogHighlight(hl) {
   if (details) details.open = true;
 
   // 1. Try text-level highlighting across the ENTIRE encounter item
-  let textFound = false;
-  if (preview) {
-    textFound = tryHighlightText(item, preview);
-  }
+  const textFound = tryHighlightText(item, query, preview);
 
   // 2. If text matching missed, apply section-level highlighting as fallback
   if (!textFound && section) {
@@ -356,22 +364,49 @@ function applyDialogHighlight(hl) {
   setTimeout(() => scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
 }
 
-function tryHighlightText(container, preview) {
-  if (!preview || !container) return false;
+function tryHighlightText(container, query, preview) {
+  if (!container) return false;
+  if (!query && !preview) return false;
 
-  // Build candidates: raw substrings + phrase fragments
-  const raw = preview.trim();
-  const phrases = raw.split(/[.;,\n]+/).map((p) => p.trim()).filter((p) => p.length >= 8);
-  phrases.sort((a, b) => b.length - a.length);
+  // Build candidates — prioritise the search query, then fall back to preview fragments
+  const candidates = [];
 
-  const candidates = [
-    raw.substring(0, 80),
-    raw.substring(0, 50),
-    raw.substring(0, 30),
-    ...phrases.slice(0, 4),
-  ].filter((c) => c && c.length >= 8);
+  // 1. The original query/keyword is the most relevant thing to highlight
+  if (query) {
+    const q = query.trim();
+    candidates.push(q);
+    // Also try individual multi-word sub-phrases (e.g. "blurred vision" from "patients with blurred vision")
+    // Skip very short stop-words
+    const words = q.split(/\s+/).filter((w) => w.length >= 4);
+    if (words.length > 2) {
+      // Try sliding windows of 2-3 words
+      for (let len = Math.min(words.length, 3); len >= 2; len--) {
+        for (let i = 0; i <= words.length - len; i++) {
+          candidates.push(words.slice(i, i + len).join(" "));
+        }
+      }
+    }
+  }
 
-  for (const candidate of candidates) {
+  // 2. Preview fragments as fallback — strip leading/trailing ellipsis
+  if (preview) {
+    const raw = preview.trim().replace(/^…+/, "").replace(/…+$/, "").trim();
+    const phrases = raw.split(/[.;,\n]+/).map((p) => p.trim()).filter((p) => p.length >= 8);
+    phrases.sort((a, b) => b.length - a.length);
+    candidates.push(...phrases.slice(0, 4));
+  }
+
+  // Deduplicate and filter
+  const seen = new Set();
+  const unique = candidates.filter((c) => {
+    if (!c || c.length < 4) return false;
+    const key = c.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  for (const candidate of unique) {
     const search = candidate.toLowerCase();
 
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -713,6 +748,7 @@ function attachCitationClicks(bubble, sources) {
         date: src.encounter_date,
         section: src.section,
         preview: src.preview,
+        query: src.query,
       });
     });
   });
@@ -752,6 +788,7 @@ function appendCitationBar(bubble, sources) {
         date: src.encounter_date,
         section: src.section,
         preview: src.preview,
+        query: src.query,
       });
     });
     bar.appendChild(pill);
