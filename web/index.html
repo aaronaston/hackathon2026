@@ -3,125 +3,188 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Clinical Patient Explorer</title>
+  <title>WELL Hackathon 2026 | Patient Intelligence Explorer</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Plus+Jakarta+Sans:wght@500;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="bg-shape bg-shape-a"></div>
-  <div class="bg-shape bg-shape-b"></div>
+  <div class="page-bg"></div>
 
-  <header class="topbar">
-    <div>
-      <p class="eyebrow">Clinical Sandbox</p>
-      <h1>Patient Explorer</h1>
+  <header class="hero">
+    <div class="hero-left">
+      <p class="hero-kicker">WELL HEALTH TECHNOLOGIES</p>
+      <h1>Patient Intelligence Explorer</h1>
+      <p class="hero-sub">Hackathon 2026 · Built by <strong>Neural Ninjas</strong></p>
+      <p class="hero-mission">Positively impacting health outcomes through data-informed clinical context.</p>
     </div>
-    <button id="toggleAllMask" class="ghost-btn" type="button" aria-pressed="false">
-      <span class="eye-icon" aria-hidden="true"></span>
-      <span class="toggle-label">Reveal All</span>
-    </button>
+
+    <div class="hero-right">
+      <div class="badge">TSX: WELL</div>
+      <button id="toggleAllMask" class="action-btn" type="button" aria-pressed="false">
+        <span class="eye-icon" aria-hidden="true"></span>
+        <span class="toggle-label">Reveal All Sensitive Data</span>
+      </button>
+    </div>
   </header>
 
-  <section class="panel stats" id="stats"></section>
+  <section class="stats" id="stats"></section>
 
-  <section class="panel filters">
-    <div class="filter-grid">
+  <section class="layout">
+    <aside class="panel filters">
+      <div class="filter-head">
+        <h2>Smart Filters</h2>
+        <button id="clearFilters" type="button" class="link-btn">Clear</button>
+      </div>
+
       <label>
         Semantic Search
-        <input id="q" type="search" placeholder="Try: asthma child, diabetes sugar, anxiety mood" />
+        <input id="q" type="search" placeholder="asthma in children, diabetic eye care, mental health" />
       </label>
 
-      <label>
-        Location (City)
-        <select id="city">
-          <option value="">All cities</option>
-        </select>
-      </label>
+      <div class="filter-grid">
+        <label>City
+          <select id="city"><option value="">All</option></select>
+        </label>
+        <label>Province
+          <select id="province"><option value="">All</option></select>
+        </label>
+        <label>Sex / Gender
+          <select id="sex_gender"><option value="">All</option></select>
+        </label>
+        <label>Ethnicity
+          <select id="ethnicity"><option value="">All</option></select>
+        </label>
+        <label>Known Allergy
+          <select id="known_allergy">
+            <option value="all">All</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+        <label>Organization
+          <select id="organization"><option value="">All</option></select>
+        </label>
+        <label>Practitioner
+          <select id="practitioner"><option value="">All</option></select>
+        </label>
+        <label>Encounter Type
+          <select id="encounter_type"><option value="">All</option></select>
+        </label>
+        <label>Care Setting
+          <select id="setting"><option value="">All</option></select>
+        </label>
+      </div>
 
-      <label>
-        Sex/Gender
-        <select id="sex_gender">
-          <option value="">All</option>
-        </select>
-      </label>
+      <div class="range-row">
+        <label>Min Age
+          <input id="min_age" type="number" min="0" max="120" placeholder="0" />
+        </label>
+        <label>Max Age
+          <input id="max_age" type="number" min="0" max="120" placeholder="120" />
+        </label>
+      </div>
 
-      <label>
-        Ethnicity
-        <select id="ethnicity">
-          <option value="">All</option>
-        </select>
-      </label>
+      <div class="range-row">
+        <label>Encounter From
+          <input id="date_from" type="date" />
+        </label>
+        <label>Encounter To
+          <input id="date_to" type="date" />
+        </label>
+      </div>
+    </aside>
 
-      <label>
-        Known Allergy
-        <select id="known_allergy">
-          <option value="all">All</option>
-          <option value="yes">Yes</option>
-          <option value="no">No</option>
-        </select>
-      </label>
-
-      <label>
-        Age Range
-        <div class="range-wrap">
-          <input id="min_age" type="number" min="0" max="120" placeholder="Min" />
-          <input id="max_age" type="number" min="0" max="120" placeholder="Max" />
-        </div>
-      </label>
-    </div>
+    <main>
+      <div class="results-head">
+        <h2 id="resultTitle">Patients</h2>
+        <p id="resultMeta"></p>
+      </div>
+      <section id="results" class="results"></section>
+    </main>
   </section>
-
-  <main id="results" class="results"></main>
 
   <template id="card-template">
     <article class="panel patient-card">
-      <div class="card-head">
+      <div class="card-top">
         <div>
-          <h2 class="name"></h2>
+          <h3 class="name"></h3>
           <p class="meta"></p>
         </div>
-        <div class="head-actions">
-          <p class="score"></p>
-          <button class="eye-btn" type="button" aria-pressed="false" title="Reveal sensitive fields">
-            <span class="eye-icon" aria-hidden="true"></span>
-          </button>
-        </div>
+        <button class="eye-btn" type="button" aria-pressed="false" title="Reveal sensitive fields">
+          <span class="eye-icon" aria-hidden="true"></span>
+        </button>
       </div>
 
       <div class="chips"></div>
 
-      <div class="grid">
+      <div class="kv-grid">
         <div>
           <p class="label">Date of Birth</p>
-          <p class="field dob sensitive"></p>
+          <p class="value dob sensitive"></p>
         </div>
         <div>
           <p class="label">Address</p>
-          <p class="field address sensitive"></p>
+          <p class="value address sensitive"></p>
         </div>
         <div>
-          <p class="label">Allergies</p>
-          <p class="field allergies sensitive"></p>
+          <p class="label">Primary Allergies</p>
+          <p class="value allergies sensitive"></p>
         </div>
         <div>
-          <p class="label">Medications</p>
-          <p class="field meds sensitive"></p>
+          <p class="label">Medication Summary</p>
+          <p class="value meds sensitive"></p>
         </div>
       </div>
 
+      <div class="card-actions">
+        <button class="link-btn view-encounters-btn" type="button">View Encounter Timeline</button>
+      </div>
+
       <details>
-        <summary>Clinical Details</summary>
-        <div class="detail-row">
+        <summary>Expanded Context</summary>
+        <div class="detail-grid">
           <p><strong>Problem List:</strong> <span class="problem-list"></span></p>
-          <p><strong>Diagnostics:</strong> <span class="diagnostics sensitive"></span></p>
-          <p><strong>Social:</strong> <span class="social sensitive"></span></p>
           <p><strong>Plan:</strong> <span class="plan"></span></p>
+          <p><strong>Organizations:</strong> <span class="orgs"></span></p>
+          <p><strong>Practitioners:</strong> <span class="practs"></span></p>
+          <p><strong>Last Encounter:</strong> <span class="last-encounter"></span></p>
+          <p><strong>Recent Reasons:</strong> <span class="enc-reasons sensitive"></span></p>
         </div>
       </details>
     </article>
   </template>
+
+  <dialog id="encounterDialog" class="encounter-dialog">
+    <form method="dialog" class="dialog-shell">
+      <header class="dialog-head">
+        <div>
+          <p class="dialog-kicker">Patient Encounter Detail</p>
+          <h3 id="dialogPatientName"></h3>
+          <p id="dialogPatientMeta" class="dialog-meta"></p>
+        </div>
+        <button type="submit" class="eye-btn" aria-label="Close dialog">✕</button>
+      </header>
+
+      <section class="dialog-snapshot">
+        <div>
+          <p class="label">Problem List</p>
+          <p id="dialogProblemList" class="value"></p>
+        </div>
+        <div>
+          <p class="label">Allergies</p>
+          <p id="dialogAllergies" class="value sensitive"></p>
+        </div>
+        <div>
+          <p class="label">Medication Summary</p>
+          <p id="dialogMeds" class="value sensitive"></p>
+        </div>
+      </section>
+
+      <section id="dialogEncounterList" class="dialog-encounters"></section>
+    </form>
+  </dialog>
 
   <script src="/app.js" defer></script>
 </body>
