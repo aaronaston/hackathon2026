@@ -134,7 +134,7 @@ OPENAI_API_KEY=your_key_here
 ```
 
 ## Patient Web Explorer
-Run a local webpage for patient visualization, filtering, masked field reveal, and semantic-style search.
+Run a local webpage for patient visualization, richer clinical context, masked field reveal, and semantic-style search.
 
 Start server:
 
@@ -149,9 +149,10 @@ http://127.0.0.1:8080
 ```
 
 Features:
-- Semantic-style search (query expansion + weighted relevance scoring)
-- Filters: city, sex/gender, ethnicity, known allergy, age range
-- Masked sensitive fields (DOB, address, allergies, meds, diagnostics, social) with per-card eye reveal
+- Semantic-style search over patient summaries + encounter narratives
+- Filters: city, province, sex/gender, ethnicity, known allergy, organization, practitioner, encounter type, care setting, age range, encounter date range
+- Context-rich cards: encounter count, last encounter date, organizations, practitioners, recent visit reasons
+- Masked sensitive fields (DOB, address, allergies, meds, and recent encounter reasons) with per-card eye reveal
 - Global reveal/hide toggle
 
 ## Working with Test Data
