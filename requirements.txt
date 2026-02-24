@@ -1,23 +1,20 @@
-# Core LlamaIndex — let pip resolve the compatible core version
-llama-index==0.14.8
-llama-index-llms-openai==0.6.9
+# Core LlamaIndex
+llama-index>=0.14
+llama-index-llms-openai>=0.6
+llama-index-embeddings-huggingface>=0.6
+llama-index-embeddings-openai>=0.5
+llama-index-retrievers-bm25>=0.6
+llama-index-postprocessor-flag-embedding-reranker>=0.4
 
-# Embeddings: medical-domain HuggingFace model (replaces OpenAI embeddings)
-llama-index-embeddings-huggingface>=0.4.0
-llama-index-embeddings-openai==0.5.1
-sentence-transformers>=2.7.0,<3.0.0
-
-# Hybrid retrieval: BM25 sparse search
-llama-index-retrievers-bm25>=0.4.0
-rank-bm25>=0.2.2
-
-# Reranking: LLMRerank is built into llama-index-core (no extra package needed)
+# Embeddings: medical-domain HuggingFace model
+sentence-transformers>=2.7.0
 
 # Chart generation
-matplotlib>=3.8.0
+matplotlib>=3.8
+
+# Environment
+python-dotenv>=1.0
 
 # Existing utilities
-openai==2.6.1
-pypdf==6.7.0
-cryptography==46.0.5
-pymupdf==1.27.1
+openai>=2.6
+pypdf>=6.7
