@@ -53,6 +53,14 @@ SEMANTIC_HINTS = {
     "senior": ["geriatric", "cognitive", "falls"],
 }
 
+SEARCH_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
+    "how", "in", "is", "it", "me", "of", "on", "or", "that", "the", "their", "them",
+    "there", "these", "they", "this", "to", "was", "were", "what", "when", "where",
+    "which", "who", "with", "without", "you", "live", "lives", "living", "reside",
+    "resides", "residing", "patients", "patient",
+}
+
 
 def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip()).lower()
@@ -414,7 +422,10 @@ def enrich_patients(
 
 
 def semantic_tokens(query: str) -> list[str]:
-    base = [t for t in re.split(r"[^a-zA-Z0-9]+", query.lower()) if t]
+    base = [
+        t for t in re.split(r"[^a-zA-Z0-9]+", query.lower())
+        if t and len(t) >= 3 and t not in SEARCH_STOPWORDS
+    ]
     expanded = set(base)
     for token in base:
         expanded.update(SEMANTIC_HINTS.get(token, []))
@@ -451,6 +462,77 @@ def infer_allergy_intent(query_text: str) -> str | None:
     return None
 
 
+def extract_residence_keyword(query_text: str) -> str | None:
+    q = query_text.lower().strip()
+    if not q:
+        return None
+
+    # Examples:
+    # - "who lives on lakeshore"
+    # - "patients residing at brock"
+    # - "address includes lakeshore"
+    patterns = [
+        r"\b(?:live|lives|living|reside|resides|residing)\s+(?:on|at|in)\s+([a-z0-9][a-z0-9\s\-']+)",
+        r"\baddress(?:es)?\s+(?:on|at|in|includes?)\s+([a-z0-9][a-z0-9\s\-']+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, q)
+        if not m:
+            continue
+        raw = re.sub(r"[?.!,;:]+$", "", m.group(1)).strip()
+        if not raw:
+            continue
+        parts = [p for p in re.split(r"\s+", raw) if p and p not in SEARCH_STOPWORDS]
+        if not parts:
+            continue
+        # Use first meaningful token (e.g., "lakeshore" from "lakeshore rd e")
+        return parts[0]
+    return None
+
+
+def extract_location_keyword(query_text: str) -> str | None:
+    q = query_text.lower().strip()
+    if not q:
+        return None
+
+    # Prioritize explicit residence/address phrasing first.
+    residence_kw = extract_residence_keyword(q)
+    if residence_kw:
+        return residence_kw
+
+    # Broader phrasing examples:
+    # - "who's on lakeshore?"
+    # - "which patients are at lakeshore"
+    # - "patients in lakeshore"
+    patterns = [
+        r"\b(?:who(?:'s|s)?|which patients?|patients?)\b[^?]{0,40}\b(?:on|at|in)\s+([a-z0-9][a-z0-9\s\-']+)",
+        r"\b(?:on|at|in)\s+([a-z0-9][a-z0-9\s\-']+)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, q)
+        if not m:
+            continue
+        raw = re.sub(r"[?.!,;:]+$", "", m.group(1)).strip()
+        if not raw:
+            continue
+        parts = [p for p in re.split(r"\s+", raw) if p and p not in SEARCH_STOPWORDS]
+        if not parts:
+            continue
+        return parts[0]
+    return None
+
+
+def is_home_address_query(query_text: str) -> bool:
+    q = query_text.lower().strip()
+    if not q:
+        return False
+    return bool(
+        re.search(r"\b(live|lives|living|reside|resides|residing)\b", q)
+        or re.search(r"\bhome address\b", q)
+        or re.search(r"\baddress(?:es)?\b", q)
+    )
+
+
 def score_patient(patient: dict[str, Any], query: str) -> tuple[int, list[str]]:
     q = query.strip().lower()
     if not q:
@@ -467,8 +549,9 @@ def score_patient(patient: dict[str, Any], query: str) -> tuple[int, list[str]]:
 
     fields = {
         "name": patient.get("name", "").lower(),
+        "address": patient.get("address", "").lower(),
         "profile": (
-            f"{patient.get('address', '')} {patient.get('ethnicity', '')} "
+            f"{patient.get('ethnicity', '')} "
             f"{patient.get('sex_gender', '')} {' '.join(patient.get('organizations', []))} "
             f"{' '.join(patient.get('practitioners', []))}"
         ).lower(),
@@ -492,6 +575,9 @@ def score_patient(patient: dict[str, Any], query: str) -> tuple[int, list[str]]:
         if token in fields["conditions"]:
             score += 10
             matched.add("problem list")
+        if token in fields["address"]:
+            score += 11
+            matched.add("address")
         if token in fields["allergies"]:
             score += 9
             matched.add("allergies")
@@ -575,6 +661,7 @@ def filter_patients(patients: list[dict[str, Any]], query: dict[str, list[str]])
         inferred = infer_allergy_intent(text)
         if inferred in {"yes", "no"}:
             allergy = inferred
+    residence_kw = extract_residence_keyword(text)
 
     filtered: list[dict[str, Any]] = []
 
@@ -607,6 +694,8 @@ def filter_patients(patients: list[dict[str, Any]], query: dict[str, list[str]])
         if max_age is not None and (patient.get("age") is None or patient.get("age") > max_age):
             continue
         if not _passes_date_range(patient, date_from, date_to):
+            continue
+        if residence_kw and residence_kw not in patient.get("address", "").lower():
             continue
 
         score, matched = score_patient(patient, text)
@@ -838,6 +927,72 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.flush()
             except Exception:
                 pass
+
+        # Deterministic handling for residence/address queries to avoid LLM tool interpretation errors.
+        # This keeps "Who lives on <street>" aligned with the actual patient address data.
+        if self.state is not None:
+            location_kw = extract_location_keyword(user_message)
+            if location_kw:
+                home_only = is_home_address_query(user_message)
+                _send_event("status", {"text": "Checking patient addresses…"})
+                residents = [
+                    p for p in self.state.patients
+                    if location_kw in p.get("address", "").lower()
+                ]
+                related_non_resident = [
+                    p for p in self.state.patients
+                    if location_kw in p.get("search_blob", "").lower()
+                    and location_kw not in p.get("address", "").lower()
+                ]
+
+                def _context_note(patient: dict[str, Any]) -> str:
+                    patient_name = patient.get("name", "?")
+                    matching_encounter = next(
+                        (
+                            enc for enc in (patient.get("encounters", []) or [])
+                            if location_kw in (
+                                " ".join(
+                                    [
+                                        enc.get("organization", ""),
+                                        enc.get("reason_for_visit", ""),
+                                        enc.get("title", ""),
+                                    ]
+                                ).lower()
+                            )
+                        ),
+                        None,
+                    )
+                    if not matching_encounter:
+                        return patient_name
+                    org = matching_encounter.get("organization", "").strip()
+                    reason = matching_encounter.get("reason_for_visit", "").strip()
+                    parts = [patient_name]
+                    if org:
+                        parts.append(f"visited {org}")
+                    if reason:
+                        parts.append(f"for '{reason}'")
+                    return " ".join(parts)
+
+                if home_only:
+                    if residents:
+                        names = ", ".join(p.get("name", "?") for p in residents)
+                        reply = (
+                            f"{len(residents)} patient(s) live on '{location_kw}': {names}.\n"
+                            "Checked using home address fields only."
+                        )
+                    else:
+                        reply = f"No patient home addresses contain '{location_kw}'."
+                else:
+                    resident_names = ", ".join(p.get("name", "?") for p in residents) if residents else "none"
+                    visit_notes = "; ".join(_context_note(p) for p in related_non_resident[:4]) if related_non_resident else "none"
+                    reply = (
+                        f"On '{location_kw}', I found {len(residents) + len(related_non_resident)} relevant patient(s).\n"
+                        f"- Lives there (home address): {len(residents)} ({resident_names})\n"
+                        f"- Mentioned there via clinic/encounter context: {len(related_non_resident)} ({visit_notes})"
+                    )
+                _send_event("reply", {"text": reply})
+                _send_event("done", {})
+                return
 
         def _run_agent() -> None:
             """Run the agent using the cached pipeline."""

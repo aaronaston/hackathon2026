@@ -846,6 +846,26 @@ function openTimelineFromChat(patientName, highlight) {
 chat.toggle.addEventListener("click", toggleChat);
 chat.clear.addEventListener("click", clearChat);
 
+// Close encounter dialog when clicking outside the dialog panel.
+els.encounterDialog.addEventListener("click", (e) => {
+  if (!els.encounterDialog.open) return;
+  const shell = els.encounterDialog.querySelector(".dialog-shell");
+  if (!shell) return;
+  const rect = shell.getBoundingClientRect();
+  const clickedOutside =
+    e.clientX < rect.left ||
+    e.clientX > rect.right ||
+    e.clientY < rect.top ||
+    e.clientY > rect.bottom;
+  if (clickedOutside) {
+    if (typeof els.encounterDialog.close === "function") {
+      els.encounterDialog.close();
+    } else {
+      els.encounterDialog.removeAttribute("open");
+    }
+  }
+});
+
 chat.form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = chat.input.value.trim();
