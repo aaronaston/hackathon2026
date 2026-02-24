@@ -230,7 +230,7 @@ function renderEncounterItem(encounter, masked) {
     .join("");
 
   return `
-    <article class="encounter-item">
+    <article class="encounter-item" data-date="${escapeHtml(encounter.date || "")}">
       <div class="encounter-top">
         <div>
           <h4>${escapeHtml(encounter.title || "Encounter")}</h4>
@@ -255,7 +255,16 @@ function renderEncounterItem(encounter, masked) {
   `;
 }
 
-function openEncounterDialog(patient) {
+function openEncounterDialog(patient, highlight) {
+  // highlight: string (date) or { date?, section?, preview? }
+  if (typeof highlight === "string") highlight = { date: highlight };
+
+  // Auto-reveal sensitive data when opening from a citation source,
+  // otherwise the text is masked (asterisks) and highlighting can't work.
+  if (highlight && (highlight.section || highlight.preview)) {
+    state.revealedIds.add(patient.id);
+  }
+
   const revealed = state.revealAll || state.revealedIds.has(patient.id);
   const masked = !revealed;
 
@@ -281,6 +290,168 @@ function openEncounterDialog(patient) {
   } else {
     els.encounterDialog.setAttribute("open", "open");
   }
+
+  if (highlight) {
+    setTimeout(() => applyDialogHighlight(highlight), 150);
+  }
+}
+
+function applyDialogHighlight(hl) {
+  console.log("[highlight] applyDialogHighlight called with:", JSON.stringify(hl));
+  const { date, section, preview } = hl;
+
+  // -- Patient-summary source (no encounter date) --
+  if (!date && section) {
+    const sectionMap = {
+      "problem list": els.dialogProblemList,
+      "allergies": els.dialogAllergies,
+      "medications": els.dialogMeds,
+    };
+    const key = Object.keys(sectionMap).find((k) => section.toLowerCase().includes(k));
+    if (key) {
+      const el = sectionMap[key];
+      el.closest("div")?.classList.add("highlight-section");
+      if (preview) tryHighlightText(el, preview);
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    return;
+  }
+
+  // -- Encounter source --
+  if (!date) { console.log("[highlight] No date, skipping encounter search"); return; }
+  const items = els.dialogEncounterList.querySelectorAll(".encounter-item");
+  console.log("[highlight] Looking for date:", date, "in", items.length, "encounter items");
+  console.log("[highlight] Available dates:", [...items].map(i => i.dataset.date));
+  for (const item of items) {
+    if (item.dataset.date !== date) continue;
+    console.log("[highlight] Found matching encounter item for date:", date);
+    item.classList.add("highlighted");
+
+    if (!section) {
+      item.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+
+    const sectionLower = section.toLowerCase();
+    let targetP = null;
+
+    // 1. Try the full-note details sections (most specific)
+    const details = item.querySelector("details");
+    if (details) {
+      for (const p of details.querySelectorAll("p")) {
+        const strong = p.querySelector("strong");
+        const strongText = strong ? strong.textContent.toLowerCase().replace(":", "").trim() : "";
+        console.log("[highlight] Checking details <strong>:", strongText, "vs", sectionLower);
+        if (strong && strongText === sectionLower) {
+          details.open = true;
+          targetP = p;
+          console.log("[highlight] Matched details section:", strongText);
+          break;
+        }
+      }
+    }
+
+    // 2. Try visible summary paragraphs
+    if (!targetP) {
+      for (const p of item.querySelectorAll(".encounter-summary p")) {
+        console.log("[highlight] Checking summary p text:", p.textContent.substring(0, 60));
+        if (p.textContent.toLowerCase().includes(sectionLower)) {
+          targetP = p;
+          console.log("[highlight] Matched summary paragraph");
+          break;
+        }
+      }
+    }
+
+    // 3. Try the encounter header (for "Encounter Header" sections)
+    if (!targetP && sectionLower.includes("header")) {
+      targetP = item.querySelector(".encounter-top");
+      console.log("[highlight] Matched encounter header");
+    }
+
+    if (targetP) {
+      targetP.classList.add("highlight-section");
+      console.log("[highlight] Target paragraph textContent:", targetP.textContent.substring(0, 120));
+      console.log("[highlight] Preview to match:", preview ? preview.substring(0, 80) : "(none)");
+      if (preview) {
+        const matched = tryHighlightText(targetP, preview);
+        console.log("[highlight] tryHighlightText result:", matched);
+      }
+      targetP.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      console.log("[highlight] No matching section found for:", sectionLower);
+      item.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    return;
+  }
+  console.log("[highlight] No encounter item found for date:", date);
+}
+
+function tryHighlightText(container, preview) {
+  if (!preview || !container) return false;
+
+  // Build a list of candidate search strings from the preview:
+  // 1. The raw preview at various lengths (handles exact matches)
+  // 2. Distinct phrases split on sentence/clause boundaries (handles partial matches)
+  const raw = preview.trim();
+  const phrases = raw
+    .split(/[.;,\n]+/)
+    .map((p) => p.trim())
+    .filter((p) => p.length >= 12)
+    .sort((a, b) => b.length - a.length);
+
+  const candidates = [
+    raw.substring(0, 80),
+    raw.substring(0, 50),
+    raw.substring(0, 30),
+    ...phrases.slice(0, 4),
+  ].filter((c) => c && c.length >= 10);
+
+  for (const candidate of candidates) {
+    const search = candidate.toLowerCase().replace(/\s+/g, " ");
+
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      // Normalize target whitespace for matching, but track original positions
+      const origText = node.textContent;
+      const normText = origText.replace(/\s+/g, " ").toLowerCase();
+      const idx = normText.indexOf(search);
+      if (idx < 0) continue;
+
+      // Map normalized position back to original text position
+      let origIdx = 0, normCount = 0;
+      while (normCount < idx && origIdx < origText.length) {
+        if (/\s/.test(origText[origIdx]) && origIdx > 0 && /\s/.test(origText[origIdx - 1])) {
+          origIdx++;
+          continue; // skip extra whitespace chars that collapse to nothing in normalized
+        }
+        origIdx++;
+        normCount++;
+      }
+
+      // Find the original end position
+      let origEnd = origIdx, matchNorm = 0;
+      while (matchNorm < search.length && origEnd < origText.length) {
+        if (/\s/.test(origText[origEnd]) && origEnd > origIdx && /\s/.test(origText[origEnd - 1])) {
+          origEnd++;
+          continue;
+        }
+        origEnd++;
+        matchNorm++;
+      }
+
+      const matchLen = origEnd - origIdx;
+      const matchNode = origIdx > 0 ? node.splitText(origIdx) : node;
+      if (matchLen < matchNode.textContent.length) matchNode.splitText(matchLen);
+      const mark = document.createElement("mark");
+      mark.className = "cite-highlight";
+      matchNode.parentNode.insertBefore(mark, matchNode);
+      mark.appendChild(matchNode);
+      return true;
+    }
+  }
+  return false;
 }
 
 function updateResultHeader() {
@@ -389,4 +560,316 @@ async function boot() {
 boot().catch((error) => {
   console.error(error);
   els.results.innerHTML = `<p class="panel empty">Failed to load explorer data: ${error.message}</p>`;
+});
+
+/* ───── Chat Widget ───── */
+
+const chat = {
+  toggle: document.getElementById("chatToggle"),
+  panel: document.getElementById("chatPanel"),
+  messages: document.getElementById("chatMessages"),
+  form: document.getElementById("chatForm"),
+  input: document.getElementById("chatInput"),
+  clear: document.getElementById("chatClear"),
+  busy: false,
+  pendingSources: [],
+};
+
+function chatOpen() {
+  return chat.panel.classList.contains("open");
+}
+
+function toggleChat() {
+  const opening = !chatOpen();
+  chat.panel.classList.toggle("open", opening);
+  chat.panel.setAttribute("aria-hidden", String(!opening));
+  chat.toggle.classList.toggle("open", opening);
+  if (opening) chat.input.focus();
+}
+
+function addBubble(cls, html) {
+  const div = document.createElement("div");
+  div.className = `chat-bubble ${cls}`;
+  div.innerHTML = html;
+  chat.messages.appendChild(div);
+  chat.messages.scrollTop = chat.messages.scrollHeight;
+  return div;
+}
+
+function addChart(b64, caption) {
+  const wrap = document.createElement("div");
+  wrap.className = "chat-chart";
+  const img = document.createElement("img");
+  img.src = `data:image/png;base64,${b64}`;
+  img.alt = caption;
+  wrap.appendChild(img);
+  const p = document.createElement("p");
+  p.textContent = caption;
+  wrap.appendChild(p);
+  chat.messages.appendChild(wrap);
+  chat.messages.scrollTop = chat.messages.scrollHeight;
+}
+
+function showTyping() {
+  const el = document.createElement("div");
+  el.className = "chat-typing";
+  el.id = "chatTyping";
+  el.innerHTML = "<span></span><span></span><span></span>";
+  chat.messages.appendChild(el);
+  chat.messages.scrollTop = chat.messages.scrollHeight;
+}
+
+function hideTyping() {
+  const el = document.getElementById("chatTyping");
+  if (el) el.remove();
+}
+
+function clearChat() {
+  chat.pendingSources = [];
+  chat.messages.innerHTML = `
+    <div class="chat-welcome">
+      <p>Hi! I can search patient records, answer clinical questions, and generate charts from encounter data.</p>
+      <p class="chat-welcome-hint">Try: "Which patients have diabetes?" or "Chart A1C for Eleanor Voss"</p>
+    </div>`;
+}
+
+async function sendMessage(text) {
+  if (chat.busy || !text.trim()) return;
+  chat.busy = true;
+  chat.form.querySelector("button").disabled = true;
+
+  // Remove welcome message on first send
+  const welcome = chat.messages.querySelector(".chat-welcome");
+  if (welcome) welcome.remove();
+
+  addBubble("user", escapeHtml(text));
+  showTyping();
+
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text }),
+    });
+
+    if (!resp.ok) {
+      hideTyping();
+      addBubble("error", `Server error (${resp.status})`);
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      let eventType = "";
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith("data: ") && eventType) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            handleSSE(eventType, data);
+          } catch { /* skip malformed */ }
+          eventType = "";
+        }
+      }
+    }
+  } catch (err) {
+    hideTyping();
+    addBubble("error", `Connection failed: ${escapeHtml(err.message)}`);
+  } finally {
+    hideTyping();
+    chat.busy = false;
+    chat.form.querySelector("button").disabled = false;
+    chat.input.focus();
+  }
+}
+
+function handleSSE(type, data) {
+  switch (type) {
+    case "status":
+      hideTyping();
+      addBubble("status", escapeHtml(data.text || ""));
+      showTyping();
+      break;
+    case "tool_call": {
+      hideTyping();
+      const label = data.tool === "chart"
+        ? `Generating chart for ${data.patient} — ${data.metric}`
+        : `Searching: ${data.query || data.keyword || ""}`;
+      addBubble("tool-call", `&#9881; ${escapeHtml(label)}`);
+      showTyping();
+      break;
+    }
+    case "sources":
+      chat.pendingSources = chat.pendingSources.concat(data.sources || []);
+      break;
+    case "chart":
+      hideTyping();
+      addChart(data.b64, `${data.metric} — ${data.patient}`);
+      showTyping();
+      break;
+    case "reply": {
+      hideTyping();
+      const sources = chat.pendingSources;
+      const bubble = addBubble("assistant", formatReply(data.text || "", sources));
+      attachCitationClicks(bubble, sources);
+      linkPatientNames(bubble);
+      if (sources.length) {
+        appendCitationBar(bubble, sources);
+      }
+      chat.pendingSources = [];
+      break;
+    }
+    case "open_timeline":
+      openTimelineFromChat(data.patient_name);
+      break;
+    case "error":
+      hideTyping();
+      addBubble("error", escapeHtml(data.text || "Unknown error"));
+      break;
+    case "done":
+      hideTyping();
+      break;
+  }
+}
+
+function formatReply(text, sources) {
+  let html = escapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
+
+  if (sources && sources.length) {
+    html = html.replace(/\[(\d+)\]/g, (match, num) => {
+      const idx = parseInt(num) - 1;
+      if (idx >= 0 && idx < sources.length) {
+        const src = sources[idx];
+        const tip = `${src.patient_name} · ${src.section}${src.encounter_date ? " (" + src.encounter_date + ")" : ""}`;
+        return `<button class="citation-ref" data-src-idx="${idx}" title="${escapeHtml(tip)}">${match}</button>`;
+      }
+      return match;
+    });
+  }
+  return html;
+}
+
+function attachCitationClicks(bubble, sources) {
+  bubble.querySelectorAll(".citation-ref").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const src = sources[parseInt(btn.dataset.srcIdx)];
+      if (src) openTimelineFromChat(src.patient_name, {
+        date: src.encounter_date,
+        section: src.section,
+        preview: src.preview,
+      });
+    });
+  });
+}
+
+function appendCitationBar(bubble, sources) {
+  const bar = document.createElement("div");
+  bar.className = "chat-citations";
+
+  const label = document.createElement("span");
+  label.className = "citations-label";
+  label.textContent = "Sources:";
+  bar.appendChild(label);
+
+  const seen = new Set();
+  for (const src of sources) {
+    const key = `${src.patient_name}|${src.encounter_date || ""}|${src.section}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const pill = document.createElement("button");
+    pill.className = "citation-pill";
+    pill.type = "button";
+
+    const num = document.createElement("span");
+    num.className = "citation-num";
+    num.textContent = src.index;
+    pill.appendChild(num);
+
+    const label = src.encounter_date
+      ? ` ${src.patient_name} · ${src.section} (${src.encounter_date})`
+      : ` ${src.patient_name} · ${src.section}`;
+    pill.appendChild(document.createTextNode(label));
+
+    pill.addEventListener("click", () => {
+      openTimelineFromChat(src.patient_name, {
+        date: src.encounter_date,
+        section: src.section,
+        preview: src.preview,
+      });
+    });
+    bar.appendChild(pill);
+  }
+  chat.messages.insertBefore(bar, bubble.nextSibling);
+  chat.messages.scrollTop = chat.messages.scrollHeight;
+}
+
+function linkPatientNames(bubble) {
+  const names = state.data.map((p) => p.name).filter(Boolean);
+  if (!names.length) return;
+
+  const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+  const replacements = [];
+
+  while (walker.nextNode()) {
+    const textNode = walker.currentNode;
+    // Skip text already inside a button/link
+    if (textNode.parentElement.closest("button, a, .citation-ref")) continue;
+    for (const name of names) {
+      if (textNode.textContent.includes(name)) {
+        replacements.push({ textNode, name });
+      }
+    }
+  }
+
+  for (const { textNode, name } of replacements) {
+    const parts = textNode.textContent.split(name);
+    const frag = document.createDocumentFragment();
+    parts.forEach((part, i) => {
+      if (i > 0) {
+        const btn = document.createElement("button");
+        btn.className = "patient-link";
+        btn.textContent = name;
+        btn.title = `Open encounter timeline for ${name}`;
+        btn.addEventListener("click", () => openTimelineFromChat(name));
+        frag.appendChild(btn);
+      }
+      if (part) frag.appendChild(document.createTextNode(part));
+    });
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+}
+
+function openTimelineFromChat(patientName, highlight) {
+  const name = (patientName || "").toLowerCase();
+  const patient = state.data.find((p) => p.name.toLowerCase() === name);
+  if (!patient) {
+    addBubble("error", `Patient "${escapeHtml(patientName)}" not found in loaded data.`);
+    return;
+  }
+  openEncounterDialog(patient, highlight || undefined);
+}
+
+chat.toggle.addEventListener("click", toggleChat);
+chat.clear.addEventListener("click", clearChat);
+
+chat.form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = chat.input.value.trim();
+  if (!text) return;
+  chat.input.value = "";
+  sendMessage(text);
 });
