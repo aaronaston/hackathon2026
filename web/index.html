@@ -38,9 +38,10 @@
         <button id="clearFilters" type="button" class="link-btn">Clear</button>
       </div>
 
-      <label>
-        Semantic Search
-        <input id="q" type="search" placeholder="asthma in children, diabetic eye care, mental health" />
+      <label class="search-wrapper">
+        Semantic Search <span class="search-hint">(use @prefix for keyword lookup)</span>
+        <input id="q" type="search" placeholder="asthma in children, diabetic eye care, @john" />
+        <div id="esDropdown" class="es-dropdown"></div>
       </label>
 
       <div class="filter-grid">

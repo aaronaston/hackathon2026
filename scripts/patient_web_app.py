@@ -17,10 +17,15 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
+from elasticsearch import Elasticsearch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
 PATIENT_DIR = PROJECT_ROOT / "test-data" / "patients"
+
+# Elasticsearch configuration
+ES_HOST = "http://localhost:9200"
+ES_INDEX = "patients_keyword"
 ENCOUNTER_DIR = PROJECT_ROOT / "test-data" / "encounters"
 ORGANIZATION_FILE = PROJECT_ROOT / "test-data" / "organizations" / "organizations.md"
 PRACTITIONER_FILE = PROJECT_ROOT / "test-data" / "practitioners" / "practitioners.md"
@@ -755,6 +760,105 @@ def filter_patients(patients: list[dict[str, Any]], query: dict[str, list[str]])
     return filtered
 
 
+def es_prefix_search(query: str, min_chars: int = 2) -> dict[str, Any]:
+    """
+    Search Elasticsearch for prefix matches across first_name, last_name, and health_number.
+
+    Returns:
+        {
+            "bucket": str or None,  # "first_name", "last_name", "health_number", or None if multi-bucket
+            "results": list[dict],  # Matching patients (max 10 if single bucket)
+            "multi_bucket": bool,   # True if matches span multiple buckets
+            "error": str or None    # Error message if ES unavailable
+        }
+    """
+    if len(query) < min_chars:
+        return {"bucket": None, "results": [], "multi_bucket": False, "error": None}
+
+    try:
+        es = Elasticsearch([ES_HOST], timeout=2)
+        if not es.ping():
+            return {"bucket": None, "results": [], "multi_bucket": False, "error": "es_unavailable"}
+    except Exception:
+        return {"bucket": None, "results": [], "multi_bucket": False, "error": "es_unavailable"}
+
+    query_lower = query.lower()
+
+    # Build prefix queries for each bucket
+    search_body = {
+        "size": 50,
+        "query": {
+            "bool": {
+                "should": [
+                    {"prefix": {"first_name": {"value": query_lower}}},
+                    {"prefix": {"last_name": {"value": query_lower}}},
+                    {"prefix": {"health_number": {"value": query}}}
+                ],
+                "minimum_should_match": 1
+            }
+        }
+    }
+
+    try:
+        response = es.search(index=ES_INDEX, body=search_body)
+    except Exception:
+        return {"bucket": None, "results": [], "multi_bucket": False, "error": "es_error"}
+
+    hits = response.get("hits", {}).get("hits", [])
+
+    if not hits:
+        return {"bucket": None, "results": [], "multi_bucket": False, "error": None}
+
+    # Determine which bucket each hit matched
+    results = []
+    bucket_counts = {"first_name": 0, "last_name": 0, "health_number": 0}
+
+    for hit in hits:
+        source = hit["_source"]
+        matched_buckets = []
+
+        if source.get("first_name", "").lower().startswith(query_lower):
+            matched_buckets.append("first_name")
+            bucket_counts["first_name"] += 1
+        if source.get("last_name", "").lower().startswith(query_lower):
+            matched_buckets.append("last_name")
+            bucket_counts["last_name"] += 1
+        if source.get("health_number", "").startswith(query):
+            matched_buckets.append("health_number")
+            bucket_counts["health_number"] += 1
+
+        results.append({
+            "patient_id": source["patient_id"],
+            "full_name": source["full_name"],
+            "first_name": source["first_name"],
+            "last_name": source["last_name"],
+            "health_number": source["health_number"],
+            "matched_buckets": matched_buckets
+        })
+
+    # Determine if all matches are from the same bucket
+    non_empty_buckets = [k for k, v in bucket_counts.items() if v > 0]
+
+    if len(non_empty_buckets) == 0:
+        return {"bucket": None, "results": [], "multi_bucket": False, "error": None}
+    elif len(non_empty_buckets) == 1:
+        # Single bucket - return up to 10 results
+        return {
+            "bucket": non_empty_buckets[0],
+            "results": results[:10],
+            "multi_bucket": False,
+            "error": None
+        }
+    else:
+        # Multiple buckets - ignore per requirements
+        return {
+            "bucket": None,
+            "results": [],
+            "multi_bucket": True,
+            "error": None
+        }
+
+
 @dataclass
 class AppState:
     patients: list[dict[str, Any]]
@@ -1289,6 +1393,12 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         route = parsed.path
         query = parse_qs(parsed.query)
+
+        if route == "/api/es/search":
+            q = (query.get("q", [""])[0] or "").strip()
+            result = es_prefix_search(q)
+            self._send_json(result)
+            return
 
         if route == "/api/patients":
             if self.state is None:

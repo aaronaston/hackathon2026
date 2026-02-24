@@ -38,3 +38,40 @@ Cleanup when done:
 tmux send-keys -t "$SESSION" "exit" C-m
 tmux kill-session -t "$SESSION"
 ```
+
+## Persistent Web App Session (tmux)
+
+Use a tmux session to keep the local web explorer running while you continue other work.
+
+Prerequisites:
+- `tmux` installed and available in PATH
+- Working directory is the repository root
+
+Start once per working session:
+
+```bash
+WEB_SESSION=hackathon_web
+tmux has-session -t "$WEB_SESSION" 2>/dev/null || \
+  tmux new-session -d -s "$WEB_SESSION" "./start-web.sh"
+```
+
+Check startup output and confirm URL:
+
+```bash
+tmux capture-pane -p -t "$WEB_SESSION" -S -120
+```
+
+Expected startup line includes:
+- `Patient explorer running at http://127.0.0.1:8080`
+
+Guidelines for coding agents:
+- Reuse the same session name (`hackathon_web`) for follow-up work.
+- Do not restart the web app before every action unless configuration changed.
+- Use `tmux capture-pane` to inspect logs instead of attaching interactively.
+
+Cleanup when done:
+
+```bash
+tmux send-keys -t "$WEB_SESSION" C-c
+tmux kill-session -t "$WEB_SESSION"
+```

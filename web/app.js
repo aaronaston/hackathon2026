@@ -4,6 +4,8 @@ const state = {
   revealAll: false,
   revealedIds: new Set(),
   summary: null,
+  esSearchInFlight: false,
+  esDebounceTimer: null,
 };
 
 const els = {
@@ -28,6 +30,7 @@ const els = {
   dateFrom: document.getElementById("date_from"),
   dateTo: document.getElementById("date_to"),
   cardTemplate: document.getElementById("card-template"),
+  esDropdown: document.getElementById("esDropdown"),
   encounterDialog: document.getElementById("encounterDialog"),
   dialogPatientName: document.getElementById("dialogPatientName"),
   dialogPatientMeta: document.getElementById("dialogPatientMeta"),
@@ -490,6 +493,129 @@ function scheduleRefresh() {
   }, 140);
 }
 
+// Elasticsearch keyword search (triggered by @prefix)
+function hideEsDropdown() {
+  if (els.esDropdown) {
+    els.esDropdown.classList.remove("visible");
+    els.esDropdown.innerHTML = "";
+  }
+}
+
+function showEsDropdown(content) {
+  if (!els.esDropdown) return;
+  els.esDropdown.innerHTML = content;
+  els.esDropdown.classList.add("visible");
+}
+
+function renderEsResults(data) {
+  hideEsDropdown();
+
+  if (data.error === "es_unavailable") {
+    els.resultMeta.textContent = "Elasticsearch unavailable";
+    state.filtered = [];
+    renderResults();
+    return;
+  }
+
+  if (data.multi_bucket) {
+    // Matches from multiple buckets - show all matching patients
+    const matchedNames = new Set(data.results.map(r => r.full_name));
+    state.filtered = state.data.filter(p => matchedNames.has(p.name));
+    renderResults();
+    return;
+  }
+
+  if (!data.results || data.results.length === 0) {
+    state.filtered = [];
+    renderResults();
+    return;
+  }
+
+  // Single bucket with results - filter patient cards
+  const bucketLabel = {
+    first_name: "First Name",
+    last_name: "Last Name",
+    health_number: "Health Number"
+  }[data.bucket] || data.bucket;
+
+  const matchedNames = new Set(data.results.map(r => r.full_name));
+  state.filtered = state.data.filter(p => matchedNames.has(p.name));
+
+  // Add matched field info to filtered patients for display
+  for (const patient of state.filtered) {
+    const match = data.results.find(r => r.full_name === patient.name);
+    if (match) {
+      patient.matched_fields = [bucketLabel];
+    }
+  }
+
+  renderResults();
+}
+
+async function performEsSearch(query) {
+  if (state.esSearchInFlight) return;
+
+  state.esSearchInFlight = true;
+  try {
+    const resp = await fetch(`/api/es/search?q=${encodeURIComponent(query)}`);
+    const data = await resp.json();
+    renderEsResults(data);
+  } catch (err) {
+    showEsDropdown('<div class="es-item es-error">Search error</div>');
+  } finally {
+    state.esSearchInFlight = false;
+  }
+}
+
+function handleSearchInput() {
+  const value = els.q.value;
+
+  // Check for @ prefix
+  if (value.startsWith("@")) {
+    const query = value.slice(1); // Remove @ prefix
+
+    // Clear any pending regular search
+    clearTimeout(refreshTimer);
+
+    // Minimum 2 chars before querying
+    if (query.length < 2) {
+      hideEsDropdown();
+      // Show all patients when query is too short
+      state.filtered = state.data;
+      // Clear any matched_fields from previous ES search
+      for (const p of state.filtered) {
+        delete p.matched_fields;
+      }
+      renderResults();
+      return;
+    }
+
+    // Debounce 0.5s, don't send if in-flight
+    clearTimeout(state.esDebounceTimer);
+    state.esDebounceTimer = setTimeout(() => {
+      if (!state.esSearchInFlight) {
+        performEsSearch(query);
+      }
+    }, 500);
+  } else {
+    // Regular search - hide ES dropdown and do normal search
+    hideEsDropdown();
+    clearTimeout(state.esDebounceTimer);
+    // Clear any matched_fields from previous ES search
+    for (const p of state.data) {
+      delete p.matched_fields;
+    }
+    scheduleRefresh();
+  }
+}
+
+// Close ES dropdown when clicking outside
+document.addEventListener("click", (e) => {
+  if (els.esDropdown && !els.esDropdown.contains(e.target) && e.target !== els.q) {
+    hideEsDropdown();
+  }
+});
+
 function clearAllFilters() {
   for (const el of inputs) {
     if (el.tagName === "SELECT") {
@@ -520,8 +646,15 @@ async function boot() {
   renderResults();
 
   for (const input of inputs) {
-    input.addEventListener("input", scheduleRefresh);
-    input.addEventListener("change", scheduleRefresh);
+    if (!input) continue;
+    if (input === els.q) {
+      // Special handling for search input to detect @ prefix
+      input.addEventListener("input", handleSearchInput);
+      input.addEventListener("change", handleSearchInput);
+    } else {
+      input.addEventListener("input", scheduleRefresh);
+      input.addEventListener("change", scheduleRefresh);
+    }
   }
 
   els.toggleAllMask.addEventListener("click", () => {

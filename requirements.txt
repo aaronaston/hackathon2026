@@ -7,7 +7,7 @@ llama-index-retrievers-bm25>=0.6
 llama-index-postprocessor-flag-embedding-reranker>=0.4
 
 # Embeddings: medical-domain HuggingFace model
-sentence-transformers>=2.7.0
+sentence-transformers>=3.2.0
 
 # Chart generation
 matplotlib>=3.8
@@ -18,3 +18,8 @@ python-dotenv>=1.0
 # Existing utilities
 openai>=2.6
 pypdf>=6.7
+cryptography>=46.0
+pymupdf>=1.27
+
+# Elasticsearch for keyword search (compatible with ES 7.10.2 in docker-compose)
+elasticsearch>=7.10.0,<8.0.0
