@@ -548,10 +548,100 @@ const chat = {
   messages: document.getElementById("chatMessages"),
   form: document.getElementById("chatForm"),
   input: document.getElementById("chatInput"),
+  mentionList: document.getElementById("chatMentionList"),
   clear: document.getElementById("chatClear"),
   busy: false,
   pendingSources: [],
+  mentionState: {
+    open: false,
+    start: -1,
+    query: "",
+    options: [],
+    activeIndex: 0,
+  },
 };
+
+function getMentionCandidates() {
+  return [...new Set(state.data.map((p) => p.name).filter(Boolean))];
+}
+
+function closeMentions() {
+  chat.mentionState.open = false;
+  chat.mentionState.start = -1;
+  chat.mentionState.query = "";
+  chat.mentionState.options = [];
+  chat.mentionState.activeIndex = 0;
+  if (chat.mentionList) {
+    chat.mentionList.hidden = true;
+    chat.mentionList.innerHTML = "";
+  }
+}
+
+function applyMention(index) {
+  if (!chat.mentionState.open) return;
+  const chosen = chat.mentionState.options[index];
+  if (!chosen) return;
+
+  const value = chat.input.value;
+  const caret = chat.input.selectionStart || value.length;
+  const before = value.slice(0, chat.mentionState.start);
+  const after = value.slice(caret);
+  const insert = `@${chosen} `;
+  chat.input.value = `${before}${insert}${after}`;
+  const pos = (before + insert).length;
+  chat.input.setSelectionRange(pos, pos);
+  closeMentions();
+}
+
+function renderMentions() {
+  if (!chat.mentionList) return;
+  if (!chat.mentionState.open || !chat.mentionState.options.length) {
+    closeMentions();
+    return;
+  }
+
+  chat.mentionList.hidden = false;
+  chat.mentionList.innerHTML = "";
+  chat.mentionState.options.forEach((name, idx) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `chat-mention-item${idx === chat.mentionState.activeIndex ? " active" : ""}`;
+    btn.textContent = name;
+    btn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      applyMention(idx);
+    });
+    chat.mentionList.appendChild(btn);
+  });
+}
+
+function updateMentionsFromInput() {
+  const value = chat.input.value;
+  const caret = chat.input.selectionStart || value.length;
+  const before = value.slice(0, caret);
+  const match = before.match(/(^|\s)@([a-zA-Z0-9 .'-]{0,40})$/);
+  if (!match) {
+    closeMentions();
+    return;
+  }
+
+  const query = (match[2] || "").trim().toLowerCase();
+  const atPos = before.lastIndexOf("@");
+  const options = getMentionCandidates()
+    .filter((name) => name.toLowerCase().includes(query))
+    .slice(0, 8);
+  if (!options.length) {
+    closeMentions();
+    return;
+  }
+
+  chat.mentionState.open = true;
+  chat.mentionState.start = atPos;
+  chat.mentionState.query = query;
+  chat.mentionState.options = options;
+  chat.mentionState.activeIndex = 0;
+  renderMentions();
+}
 
 function chatOpen() {
   return chat.panel.classList.contains("open");
@@ -604,6 +694,7 @@ function hideTyping() {
 
 function clearChat() {
   chat.pendingSources = [];
+  closeMentions();
   chat.messages.innerHTML = `
     <div class="chat-welcome">
       <p>Hi! I can search patient records, answer clinical questions, and generate charts from encounter data.</p>
@@ -833,9 +924,19 @@ function linkPatientNames(bubble) {
   }
 }
 
+function normalizePatientKey(raw) {
+  return String(raw || "")
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9\s'-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function openTimelineFromChat(patientName, highlight) {
-  const name = (patientName || "").toLowerCase();
-  const patient = state.data.find((p) => p.name.toLowerCase() === name);
+  const nameKey = normalizePatientKey(patientName);
+  const patient = state.data.find((p) => normalizePatientKey(p.name) === nameKey)
+    || state.data.find((p) => normalizePatientKey(p.name).includes(nameKey) || nameKey.includes(normalizePatientKey(p.name)));
   if (!patient) {
     addBubble("error", `Patient "${escapeHtml(patientName)}" not found in loaded data.`);
     return;
@@ -870,6 +971,41 @@ chat.form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = chat.input.value.trim();
   if (!text) return;
+  closeMentions();
   chat.input.value = "";
   sendMessage(text);
+});
+
+chat.input.addEventListener("input", () => {
+  updateMentionsFromInput();
+});
+
+chat.input.addEventListener("keydown", (e) => {
+  if (!chat.mentionState.open) return;
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    chat.mentionState.activeIndex = (chat.mentionState.activeIndex + 1) % chat.mentionState.options.length;
+    renderMentions();
+    return;
+  }
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    chat.mentionState.activeIndex =
+      (chat.mentionState.activeIndex - 1 + chat.mentionState.options.length) % chat.mentionState.options.length;
+    renderMentions();
+    return;
+  }
+  if (e.key === "Enter" || e.key === "Tab") {
+    e.preventDefault();
+    applyMention(chat.mentionState.activeIndex);
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closeMentions();
+  }
+});
+
+chat.input.addEventListener("blur", () => {
+  setTimeout(() => closeMentions(), 120);
 });

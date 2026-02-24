@@ -533,6 +533,46 @@ def is_home_address_query(query_text: str) -> bool:
     )
 
 
+def _normalize_person_name(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s'-]", " ", value.lower())).strip()
+
+
+def extract_patient_lookup_name(query_text: str) -> str | None:
+    q = query_text.strip()
+    if not q:
+        return None
+
+    # Prefer explicit @mentions.
+    mention = re.search(r"@([A-Za-z][A-Za-z .'-]{1,60})", q)
+    if mention:
+        return mention.group(1).strip()
+
+    # Fallback for natural phrasing.
+    patterns = [
+        r"\bwhere\s+does\s+([A-Za-z][A-Za-z .'-]{1,60})\s+live\b",
+        r"\bwhat(?:'s| is)\s+([A-Za-z][A-Za-z .'-]{1,60})\s+(?:address|location)\b",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, q, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def find_patient_by_name(patients: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    needle = _normalize_person_name(name)
+    if not needle:
+        return None
+    for patient in patients:
+        if _normalize_person_name(patient.get("name", "")) == needle:
+            return patient
+    for patient in patients:
+        current = _normalize_person_name(patient.get("name", ""))
+        if needle in current or current in needle:
+            return patient
+    return None
+
+
 def score_patient(patient: dict[str, Any], query: str) -> tuple[int, list[str]]:
     q = query.strip().lower()
     if not q:
@@ -931,6 +971,25 @@ class Handler(SimpleHTTPRequestHandler):
         # Deterministic handling for residence/address queries to avoid LLM tool interpretation errors.
         # This keeps "Who lives on <street>" aligned with the actual patient address data.
         if self.state is not None:
+            direct_name = extract_patient_lookup_name(user_message)
+            wants_address = bool(
+                re.search(r"\bwhere\b", user_message, flags=re.IGNORECASE)
+                and re.search(r"\blive|address|location\b", user_message, flags=re.IGNORECASE)
+            )
+            if direct_name and wants_address:
+                patient = find_patient_by_name(self.state.patients, direct_name)
+                if patient is not None:
+                    address = patient.get("address", "").strip() or "Address unavailable"
+                    reply = (
+                        f"{patient.get('name', direct_name)} lives at: {address}.\n"
+                        "This answer is from the patient home address field."
+                    )
+                else:
+                    reply = f"I couldn't find a patient named '{direct_name}'."
+                _send_event("reply", {"text": reply})
+                _send_event("done", {})
+                return
+
             location_kw = extract_location_keyword(user_message)
             if location_kw:
                 home_only = is_home_address_query(user_message)

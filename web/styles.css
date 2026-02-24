@@ -706,6 +706,7 @@ summary {
 }
 
 .chat-input-area {
+  position: relative;
   display: flex;
   gap: 8px;
   padding: 12px 14px;
@@ -752,6 +753,42 @@ summary {
 }
 
 .chat-send-btn:not(:disabled):hover { opacity: 0.9; }
+
+.chat-mention-list {
+  position: absolute;
+  left: 14px;
+  right: 62px;
+  bottom: 58px;
+  max-height: 180px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #c9dcef;
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(8, 45, 92, 0.2);
+  z-index: 20;
+}
+
+.chat-mention-item {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #e5eff9;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: #1a466f;
+  cursor: pointer;
+}
+
+.chat-mention-item:last-child {
+  border-bottom: 0;
+}
+
+.chat-mention-item.active,
+.chat-mention-item:hover {
+  background: #eaf4ff;
+}
 
 /* Patient name links in chat replies */
 
