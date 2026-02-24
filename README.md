@@ -11,8 +11,8 @@ Reference framework: https://github.com/aaronaston/architecture/blob/main/docs/a
 
 ### Coverage (What / How / Where / Who / When / Why)
 - What: Synthetic patient markdown documents, encounter histories with SOAP notes, practitioner/organization rosters, and reference clinical forms.
-- How: Python CLI app using LlamaIndex + OpenAI, with in-memory indexing and tool-based agent retrieval.
-- Where: Local workstation, local filesystem, OpenAI API.
+- How: Python CLI app using LlamaIndex + OpenAI + HuggingFace MedEmbed, with hybrid BM25+vector retrieval, LLM reranking, and section-aware chunking.
+- Where: Local workstation, local filesystem, OpenAI API, HuggingFace model hub (model cached locally after first download).
 - Who: Developer/operator running scripts and querying the agent.
 - When: Reindex on every startup; no persistence across restarts.
 - Why: Fast iteration for extraction/indexing/retrieval experiments without data lifecycle complexity.
@@ -31,11 +31,13 @@ Reference framework: https://github.com/aaronaston/architecture/blob/main/docs/a
   - External dependency: OpenAI API (LLM + embeddings).
   - Data source: `test-data/patients/*.md`, `test-data/encounters/*.md`, `test-data/practitioners/`, `test-data/organizations/`.
 - Container View:
-  - One Python process hosting index build, query engine, and agent loop.
+  - One Python process hosting index build, hybrid query engine, and agent loop.
 - Component View:
-  - Index builder: reads markdown, creates one `TextNode` per file.
-  - Retrieval tool: semantic search over `VectorStoreIndex`.
-  - Agent: `FunctionAgent` with chat context and tool use.
+  - **Chunker**: reads each patient file, splits into one `TextNode` per `##` section with enriched metadata (patient name, ID, section type).
+  - **Embedder**: `HuggingFaceEmbedding` using `abhinand/MedEmbed-small-v0.1` for clinical-domain synonym awareness.
+  - **Hybrid Retriever**: `VectorIndexRetriever` + `BM25Retriever` fused via `QueryFusionRetriever` (Reciprocal Rank Fusion).
+  - **Reranker**: `LLMRerank` reduces top-20 fused candidates to top-4 before LLM synthesis.
+  - **Agent**: `FunctionAgent` with `search_patient_documents` / `count_patient_documents` tools and persistent chat context.
   - CLI shell: readline-backed interactive prompt with message history.
 
 ## Current Solution Design
@@ -67,19 +69,27 @@ Reference framework: https://github.com/aaronaston/architecture/blob/main/docs/a
 
 ## LlamaIndex Usage Details
 The agent implementation in `scripts/patient_index_agent.py` uses:
-- `VectorStoreIndex`
-  - Built from explicit `TextNode` objects.
-  - Node granularity is full file, one node per patient markdown file (no chunk splitting).
-- Query engine
-  - Created via `index.as_query_engine(similarity_top_k=4)`.
-- Agent
+- **Chunking** (`build_nodes`)
+  - Splits each IPS patient markdown on `##` section headings.
+  - Each `TextNode` carries metadata: `patient_id`, `patient_name`, `section`, `file_name`.
+- **Embeddings** (`HuggingFaceEmbedding`)
+  - Model: `abhinand/MedEmbed-small-v0.1` — fine-tuned on clinical data.
+  - Cached locally to `~/.cache/huggingface` after first download.
+  - Set globally via `Settings.embed_model` so the index and query share the same model.
+- **Hybrid Retrieval** (`build_query_engine`)
+  - `VectorIndexRetriever` — dense semantic similarity search (top 20).
+  - `BM25Retriever` — sparse BM25 keyword search (top 20).
+  - `QueryFusionRetriever` with `mode="reciprocal_rerank"` — merges both ranked lists.
+- **Reranking**
+  - `LLMRerank(top_n=4)` — scores each `(query, chunk)` pair and keeps the 4 most relevant.
+- **Agent**
   - `FunctionAgent` with tools:
-    - `search_patient_documents(query)`
-    - `count_patient_documents()`
+    - `search_patient_documents(query)` — runs full hybrid pipeline.
+    - `count_patient_documents()` — returns number of indexed files.
   - `Context(agent)` is preserved for the process lifetime to maintain chat history.
-- Citations
-  - Tool output includes source file citations with full absolute paths.
-- Persistence model
+- **Citations**
+  - Tool output includes `file_name`, `section`, and `patient_name` per source chunk.
+- **Persistence model**
   - No vector store persistence.
   - Restarting the process rebuilds index from filesystem.
 
@@ -144,9 +154,10 @@ Input/output for form fill:
 
 ## Non-Goals (Current Stage)
 - No production security hardening.
-- No persistent vector database.
+- No persistent vector database (Qdrant/Milvus would be the next step).
 - No multi-user session management.
 - No formal PHI pipeline.
+- No Cohere/external reranker API (LLMRerank used instead to avoid extra keys).
 
 ## Data Safety
 - Treat repository content as test/synthetic unless explicitly marked otherwise.

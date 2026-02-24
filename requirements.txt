@@ -1,6 +1,19 @@
+# Core LlamaIndex — let pip resolve the compatible core version
 llama-index==0.14.8
 llama-index-llms-openai==0.6.9
+
+# Embeddings: medical-domain HuggingFace model (replaces OpenAI embeddings)
+llama-index-embeddings-huggingface>=0.4.0
 llama-index-embeddings-openai==0.5.1
+sentence-transformers>=2.7.0,<3.0.0
+
+# Hybrid retrieval: BM25 sparse search
+llama-index-retrievers-bm25>=0.4.0
+rank-bm25>=0.2.2
+
+# Reranking: LLMRerank is built into llama-index-core (no extra package needed)
+
+# Existing utilities
 openai==2.6.1
 pypdf==6.7.0
 cryptography==46.0.5
