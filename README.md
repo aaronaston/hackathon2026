@@ -10,7 +10,7 @@ This README follows your preferred architecture framing (coverage + process + re
 Reference framework: https://github.com/aaronaston/architecture/blob/main/docs/architecture-framework.md
 
 ### Coverage (What / How / Where / Who / When / Why)
-- What: Synthetic patient markdown documents and reference clinical forms.
+- What: Synthetic patient markdown documents, encounter histories with SOAP notes, practitioner/organization rosters, and reference clinical forms.
 - How: Python CLI app using LlamaIndex + OpenAI, with in-memory indexing and tool-based agent retrieval.
 - Where: Local workstation, local filesystem, OpenAI API.
 - Who: Developer/operator running scripts and querying the agent.
@@ -29,7 +29,7 @@ Reference framework: https://github.com/aaronaston/architecture/blob/main/docs/a
   - Actor: User in terminal.
   - System: `patient_index_agent.py`.
   - External dependency: OpenAI API (LLM + embeddings).
-  - Data source: `test-data/patients/*.md`.
+  - Data source: `test-data/patients/*.md`, `test-data/encounters/*.md`, `test-data/practitioners/`, `test-data/organizations/`.
 - Container View:
   - One Python process hosting index build, query engine, and agent loop.
 - Component View:
@@ -43,10 +43,15 @@ Reference framework: https://github.com/aaronaston/architecture/blob/main/docs/a
 ### Data Assets
 - `reference/forms`
   - Source clinical forms (for example Ontario lab requisition PDFs)
-- `test-data/patients`
-  - 30 synthetic IPS-style patient summaries
+- `test-data/patients` — 30 synthetic IPS-style patient summaries
+- `test-data/practitioners/practitioners.md` — Roster of ~25 practitioners (family physicians, walk-in clinic physicians, emergency physicians, specialists, nurse practitioners) with practitioner numbers, CPSO registrations, and organization affiliations
+- `test-data/organizations/organizations.md` — Roster of ~19 organizations (family health teams, walk-in clinics, hospitals, specialist clinics) across Ontario with addresses, hours, and services
+- `test-data/encounters/` — 30 encounter history files (one per patient), covering Feb 2024 – Feb 2026 with full SOAP notes. ~197 encounters total across three complexity tiers:
+  - **High** (10 patients, ~10 encounters each): complex chronic disease, multi-specialist, emergency visits
+  - **Moderate** (13 patients, ~5-6 encounters each): stable chronic conditions, periodic follow-ups
+  - **Low** (7 patients, ~3-4 encounters each): healthy / single mild condition, annual visits
 - `test-data/OntarioLabReq-4422-84-sample-filled.pdf`
-  - Generated filled example for parsing/indexing experiments
+  - Generated filled example for parsing/indexing experiments (corresponds to encounter 4 in `21-AaronAston.md`)
 
 ### Scripts
 - `scripts/generate_patients.py`
