@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import base64
 import json
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +16,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from dotenv import load_dotenv
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
 PATIENT_DIR = PROJECT_ROOT / "test-data" / "patients"
 ENCOUNTER_DIR = PROJECT_ROOT / "test-data" / "encounters"
 ORGANIZATION_FILE = PROJECT_ROOT / "test-data" / "organizations" / "organizations.md"
@@ -652,6 +658,130 @@ class AppState:
         }
 
 
+class ChatPipeline:
+    """Singleton that initializes the AI pipeline once, with disk-cached embeddings."""
+
+    _instance = None
+    _lock = threading.Lock()
+    CACHE_DIR = PROJECT_ROOT / ".cache" / "chat_index"
+
+    def __init__(self) -> None:
+        self.ready = False
+        self.llm = None
+        self.nodes: list = []
+        self.query_engine = None
+
+    @classmethod
+    def get(cls) -> "ChatPipeline":
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = ChatPipeline()
+        return cls._instance
+
+    # -- Disk cache helpers --
+
+    @staticmethod
+    def _source_fingerprint() -> str:
+        """Fast fingerprint of source markdown files (count + max mtime)."""
+        import hashlib
+        files: list[Path] = []
+        for d in (PATIENT_DIR, ENCOUNTER_DIR):
+            if d.exists():
+                files.extend(sorted(d.glob("*.md")))
+        if not files:
+            return ""
+        info = f"{len(files)}:{max(f.stat().st_mtime for f in files):.0f}"
+        return hashlib.md5(info.encode()).hexdigest()
+
+    def _try_load_cached_index(self, fingerprint: str):
+        """Return a persisted VectorStoreIndex or None if stale/missing."""
+        key_file = self.CACHE_DIR / "cache_key.txt"
+        if not key_file.exists():
+            return None
+        if key_file.read_text().strip() != fingerprint:
+            return None
+        try:
+            from llama_index.core import StorageContext, load_index_from_storage
+            sc = StorageContext.from_defaults(persist_dir=str(self.CACHE_DIR))
+            return load_index_from_storage(sc)
+        except Exception:
+            return None
+
+    def _save_index_cache(self, index, fingerprint: str) -> None:
+        try:
+            self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            index.storage_context.persist(persist_dir=str(self.CACHE_DIR))
+            (self.CACHE_DIR / "cache_key.txt").write_text(fingerprint)
+        except Exception:
+            pass
+
+    # -- Main init --
+
+    def ensure_ready(self, send_event=None) -> None:
+        if self.ready:
+            return
+        with self._lock:
+            if self.ready:
+                return
+
+            emit = send_event or (lambda *_a: None)
+
+            import sys
+            sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+            from patient_index_agent import (
+                build_nodes, configure_settings,
+                HYBRID_TOP_K, RERANK_TOP_N,
+            )
+            from llama_index.core import VectorStoreIndex
+            from llama_index.core.postprocessor import LLMRerank
+            from llama_index.core.query_engine import RetrieverQueryEngine
+            from llama_index.core.retrievers import QueryFusionRetriever
+            from llama_index.llms.openai import OpenAI
+            from llama_index.retrievers.bm25 import BM25Retriever
+
+            emit("status", {"text": "Loading AI models…"})
+            self.llm = OpenAI(model="gpt-4o")
+            configure_settings(self.llm)
+
+            emit("status", {"text": "Parsing patient documents…"})
+            self.nodes = build_nodes()
+
+            # Try loading cached vector index (skips expensive re-embedding)
+            fp = self._source_fingerprint()
+            emit("status", {"text": f"Building search index over {len(self.nodes)} chunks…"})
+            cached_index = self._try_load_cached_index(fp)
+
+            if cached_index is not None:
+                index = cached_index
+                print("[chat-pipeline] Loaded vector index from disk cache")
+            else:
+                index = VectorStoreIndex(nodes=self.nodes)
+                self._save_index_cache(index, fp)
+                print("[chat-pipeline] Built fresh vector index (cached to disk)")
+
+            # BM25 + fusion + reranker (fast, always rebuilt)
+            vector_ret = index.as_retriever(similarity_top_k=HYBRID_TOP_K)
+            bm25_ret = BM25Retriever.from_defaults(
+                nodes=self.nodes, similarity_top_k=HYBRID_TOP_K,
+            )
+            fusion = QueryFusionRetriever(
+                retrievers=[vector_ret, bm25_ret],
+                similarity_top_k=HYBRID_TOP_K,
+                num_queries=1,
+                mode="reciprocal_rerank",
+                use_async=True,
+            )
+            reranker = LLMRerank(choice_batch_size=10, top_n=RERANK_TOP_N)
+            self.query_engine = RetrieverQueryEngine.from_args(
+                retriever=fusion,
+                node_postprocessors=[reranker],
+            )
+
+            self.ready = True
+            emit("status", {"text": f"Ready — {len(self.nodes)} chunks indexed."})
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(
         self,
@@ -670,6 +800,232 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        """Allow CORS preflight."""
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/chat":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        # Read the request body
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        user_message = body.get("message", "").strip()
+        if not user_message:
+            self._send_json({"error": "empty message"}, 400)
+            return
+
+        # SSE headers
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        def _send_event(event_type: str, data: Any) -> None:
+            try:
+                payload = json.dumps(data)
+                self.wfile.write(f"event: {event_type}\ndata: {payload}\n\n".encode("utf-8"))
+                self.wfile.flush()
+            except Exception:
+                pass
+
+        def _run_agent() -> None:
+            """Run the agent using the cached pipeline."""
+            try:
+                from llama_index.core.agent.workflow import FunctionAgent
+                from llama_index.core.workflow import Context
+                from datetime import datetime as _dt
+                import re as _re, json as _json
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                import matplotlib.dates as mdates
+
+                # Reuse cached pipeline — only first request pays init cost
+                pipeline = ChatPipeline.get()
+                pipeline.ensure_ready(_send_event)
+                llm = pipeline.llm
+                nodes = pipeline.nodes
+                query_engine = pipeline.query_engine
+
+                _send_event("status", {"text": "Thinking…"})
+
+                # ---- Tools ----
+
+                async def search_patient_documents(query: str) -> str:
+                    """Hybrid semantic+BM25 search across patient summaries and encounter SOAP notes."""
+                    _send_event("tool_call", {"tool": "search", "query": query})
+                    response = await query_engine.aquery(query)
+                    nodes_with_scores = getattr(response, "source_nodes", [])
+                    chunk_lines = []
+                    sources = []
+                    for i, nws in enumerate(nodes_with_scores):
+                        meta = getattr(nws.node, "metadata", {}) or {}
+                        patient = meta.get("patient_name", "Unknown")
+                        section = meta.get("section", "?")
+                        fname = meta.get("file_name", "?")
+                        has_finding = meta.get("has_finding", True)
+                        preview = meta.get("content_preview", "")
+                        flag = "[POSITIVE FINDING]" if has_finding else "[NEGATIVE / no finding]"
+                        chunk_lines.append(f"[{i+1}] {flag} Patient: {patient} | Section: {section} ({fname})\n  {preview}")
+                        sources.append({
+                            "index": i + 1,
+                            "patient_name": patient,
+                            "patient_id": meta.get("patient_id", ""),
+                            "section": section,
+                            "file_name": fname,
+                            "encounter_date": meta.get("encounter_date", ""),
+                            "document_type": meta.get("document_type", "patient_summary"),
+                            "preview": preview[:100],
+                            "has_finding": has_finding,
+                        })
+                    if sources:
+                        _send_event("sources", {"sources": sources})
+                    answer = str(response)
+                    return f"{answer}\n\n--- Retrieved chunks (cite with [N]) ---\n" + "\n".join(chunk_lines)
+
+                def scan_all_patients(keyword: str, section_filter: str = "") -> str:
+                    """Exhaustive full-scan of all chunks — no top-K cap. Use for 'list all' / demographics queries."""
+                    _send_event("tool_call", {"tool": "scan", "keyword": keyword})
+                    kw = keyword.lower()
+                    sf = section_filter.lower()
+                    matches, seen = [], set()
+                    for node in nodes:
+                        meta = node.metadata
+                        section = meta.get("section", "")
+                        if sf and sf not in section.lower():
+                            continue
+                        if kw in node.text.lower():
+                            patient = meta.get("patient_name", "?")
+                            key = (patient, section)
+                            if key not in seen:
+                                seen.add(key)
+                                preview = meta.get("content_preview", node.text[:80])
+                                matches.append(f"• {patient} ({meta.get('file_name','?')} § {section}): {preview}")
+                    if not matches:
+                        return f"No patients found matching '{keyword}'"
+                    return f"Found {len(matches)} match(es) for '{keyword}':\n" + "\n".join(matches)
+
+                async def extract_and_chart(patient_name: str, metric: str, chart_type: str = "line") -> str:
+                    """Extract a clinical metric over time from encounters and generate a chart."""
+                    _send_event("tool_call", {"tool": "chart", "patient": patient_name, "metric": metric})
+                    nl = patient_name.lower()
+                    ml = metric.lower()
+                    chunks = []
+                    for node in nodes:
+                        meta = node.metadata
+                        if meta.get("document_type") != "encounter":
+                            continue
+                        if nl not in meta.get("patient_name", "").lower():
+                            continue
+                        if ml not in node.text.lower():
+                            continue
+                        chunks.append(f"[Date: {meta.get('encounter_date','?')}]\n{meta.get('content_preview', node.text[:300])}")
+                    if not chunks:
+                        return f"No encounter data found for '{patient_name}' containing '{metric}'."
+
+                    prompt = (f"Extract every recorded value of '{metric}' for '{patient_name}' from these notes.\n"
+                              f"Return ONLY a JSON array of {{\"date\": \"YYYY-MM-DD\", \"value\": number, \"unit\": string}}.\n"
+                              f"Return [] if none found.\n\nNOTES:\n" + "\n\n".join(chunks[:20]))
+                    resp = await llm.acomplete(prompt)
+                    raw = _re.sub(r"^```(?:json)?\s*", "", str(resp).strip(), flags=_re.MULTILINE)
+                    raw = _re.sub(r"```\s*$", "", raw, flags=_re.MULTILINE).strip()
+                    try:
+                        data = _json.loads(raw)
+                    except Exception:
+                        return f"Could not parse values for '{metric}'."
+                    if not data:
+                        return f"No numeric values found for '{metric}'."
+
+                    dates = [_dt.strptime(p["date"], "%Y-%m-%d") for p in data]
+                    values = [float(p["value"]) for p in data]
+                    units = data[0].get("unit", "") if data else ""
+                    pairs = sorted(zip(dates, values), key=lambda x: x[0])
+                    dates, values = zip(*pairs)
+
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    ax.plot(dates, values, marker="o", linewidth=2, color="#3b82f6",
+                            markersize=8, markerfacecolor="white", markeredgewidth=2.5)
+                    ax.set_title(f"{metric} — {patient_name}", fontsize=14, fontweight="bold")
+                    ax.set_xlabel("Date")
+                    ax.set_ylabel(f"{metric} ({units})" if units else metric)
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+                    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+                    fig.autofmt_xdate(rotation=30)
+                    ax.grid(True, linestyle="--", alpha=0.4)
+                    fig.tight_layout()
+
+                    charts_dir = PROJECT_ROOT / "charts"
+                    charts_dir.mkdir(exist_ok=True)
+                    safe = _re.sub(r"[^\w\s-]", "", f"{patient_name}_{metric}").replace(" ", "_")
+                    chart_path = charts_dir / f"{safe}_{_dt.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    fig.savefig(chart_path, dpi=150, bbox_inches="tight")
+                    plt.close(fig)
+
+                    img_b64 = base64.b64encode(chart_path.read_bytes()).decode()
+                    _send_event("chart", {"b64": img_b64, "patient": patient_name, "metric": metric})
+
+                    return (f"Chart generated for {patient_name} — {metric}\n"
+                            f"Data points: " +
+                            ", ".join(f"{d.strftime('%Y-%m-%d')}: {v} {units}" for d, v in zip(dates, values)))
+
+                def open_encounter_timeline(patient_name: str) -> str:
+                    """Open the encounter timeline view for a patient in the EMR UI. Use when the user asks to show, view, or open a patient's encounters, chart, or timeline."""
+                    _send_event("open_timeline", {"patient_name": patient_name})
+                    return f"Opened the encounter timeline dialog for {patient_name} in the EMR interface."
+
+                def count_patient_documents() -> int:
+                    """Return total indexed patient files."""
+                    from patient_index_agent import PATIENT_DIR as _PDIR
+                    return len(list(_PDIR.glob("*.md")))
+
+                loop = asyncio.new_event_loop()
+
+                agent = FunctionAgent(
+                    tools=[search_patient_documents, scan_all_patients, extract_and_chart, open_encounter_timeline, count_patient_documents],
+                    llm=llm,
+                    system_prompt=(
+                        "You are a clinical AI assistant embedded in an EMR system.\n"
+                        "Tools:\n"
+                        "1. search_patient_documents(query) — hybrid semantic+BM25 search. Returns numbered chunks [1]–[N].\n"
+                        "2. scan_all_patients(keyword, section_filter) — exhaustive full-scan for demographics / 'list all' queries.\n"
+                        "3. extract_and_chart(patient_name, metric) — chart a clinical metric over time (A1C, BP, weight, etc).\n"
+                        "4. open_encounter_timeline(patient_name) — open the encounter timeline view for a patient in the UI. "
+                        "Use when the user asks to show, view, or open a patient's encounters, chart, or timeline.\n\n"
+                        "CITATION RULE: When referencing retrieved chunks, use numbered markers like [1], [2] "
+                        "matching the chunk numbers from search results. This lets the UI link citations to source records.\n"
+                        "NEGATION RULE: Chunks tagged [NEGATIVE / no finding] mean the patient does NOT have that condition.\n"
+                        "Always cite patient name, section, and encounter date when available."
+                    ),
+                )
+                ctx = Context(agent)
+
+                async def _go() -> str:
+                    response = await agent.run(user_msg=user_message, ctx=ctx)
+                    return str(response)
+
+                final = loop.run_until_complete(_go())
+                loop.close()
+                _send_event("reply", {"text": final})
+
+            except Exception as exc:
+                import traceback
+                _send_event("error", {"text": f"Agent error: {exc}", "trace": traceback.format_exc()})
+
+        t = threading.Thread(target=_run_agent, daemon=True)
+        t.start()
+        t.join(timeout=300)
+        _send_event("done", {})
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -727,9 +1083,20 @@ def main() -> None:
     state = AppState(patients=enriched_patients)
     server = ThreadingHTTPServer((args.host, args.port), build_handler(state))
 
+    # Pre-warm the AI chat pipeline in the background so the first query is fast
+    def _prewarm() -> None:
+        try:
+            ChatPipeline.get().ensure_ready()
+            print("[chat-pipeline] Pre-warm complete — chat is ready")
+        except Exception as exc:
+            print(f"[chat-pipeline] Pre-warm failed: {exc}")
+
+    threading.Thread(target=_prewarm, daemon=True).start()
+
     print(f"Patient explorer running at http://{args.host}:{args.port}")
     print(f"Loaded {len(enriched_patients)} patient records from {PATIENT_DIR}")
     print(f"Loaded {sum(len(p.get('encounters', [])) for p in enriched_patients)} encounters from {ENCOUNTER_DIR}")
+    print("[chat-pipeline] AI search pipeline warming up in background…")
 
     try:
         server.serve_forever()
