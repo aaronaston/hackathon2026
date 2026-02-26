@@ -1,17 +1,20 @@
+/* ═══════════════════════════════════════════════
+   Patient Intelligence Explorer — Three-Panel App
+   ═══════════════════════════════════════════════ */
+
 const state = {
   data: [],
   filtered: [],
   revealAll: false,
   revealedIds: new Set(),
   summary: null,
+  selectedPatient: null,
   esSearchInFlight: false,
   esDebounceTimer: null,
 };
 
 const els = {
-  stats: document.getElementById("stats"),
-  results: document.getElementById("results"),
-  resultTitle: document.getElementById("resultTitle"),
+  patientList: document.getElementById("patientList"),
   resultMeta: document.getElementById("resultMeta"),
   toggleAllMask: document.getElementById("toggleAllMask"),
   clearFilters: document.getElementById("clearFilters"),
@@ -29,8 +32,19 @@ const els = {
   maxAge: document.getElementById("max_age"),
   dateFrom: document.getElementById("date_from"),
   dateTo: document.getElementById("date_to"),
-  cardTemplate: document.getElementById("card-template"),
   esDropdown: document.getElementById("esDropdown"),
+  // Detail panel
+  detailEmpty: document.getElementById("detailEmpty"),
+  detailContent: document.getElementById("detailContent"),
+  detailPatientName: document.getElementById("detailPatientName"),
+  detailPatientMeta: document.getElementById("detailPatientMeta"),
+  detailProblems: document.getElementById("detailProblems"),
+  detailAllergies: document.getElementById("detailAllergies"),
+  detailMeds: document.getElementById("detailMeds"),
+  detailOrgs: document.getElementById("detailOrgs"),
+  detailEncounterList: document.getElementById("detailEncounterList"),
+  detailRevealBtn: document.getElementById("detailRevealBtn"),
+  // Dialog (for citation deep-links)
   encounterDialog: document.getElementById("encounterDialog"),
   dialogPatientName: document.getElementById("dialogPatientName"),
   dialogPatientMeta: document.getElementById("dialogPatientMeta"),
@@ -38,181 +52,191 @@ const els = {
   dialogAllergies: document.getElementById("dialogAllergies"),
   dialogMeds: document.getElementById("dialogMeds"),
   dialogEncounterList: document.getElementById("dialogEncounterList"),
+  // Navigation
+  navStats: document.getElementById("navStats"),
+  middlePanel: document.getElementById("middlePanel"),
+  patientListView: document.getElementById("patientListView"),
+  filterPanelView: document.getElementById("filterPanelView"),
+  activeFilterBadges: document.getElementById("activeFilterBadges"),
 };
 
 const inputs = [
-  els.q,
-  els.city,
-  els.province,
-  els.sexGender,
-  els.ethnicity,
-  els.knownAllergy,
-  els.organization,
-  els.practitioner,
-  els.encounterType,
-  els.setting,
-  els.minAge,
-  els.maxAge,
-  els.dateFrom,
-  els.dateTo,
+  els.q, els.city, els.province, els.sexGender, els.ethnicity,
+  els.knownAllergy, els.organization, els.practitioner,
+  els.encounterType, els.setting, els.minAge, els.maxAge,
+  els.dateFrom, els.dateTo,
 ];
 
+
+/* ═══════════════════════════════════════════════
+   Icon Navigation
+   ═══════════════════════════════════════════════ */
+
+document.querySelectorAll(".icon-nav-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".icon-nav-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    const panel = btn.dataset.panel;
+    els.patientListView.classList.toggle("hidden", panel !== "patients");
+    els.filterPanelView.classList.toggle("hidden", panel !== "filters");
+  });
+});
+
+
+/* ═══════════════════════════════════════════════
+   Data Helpers
+   ═══════════════════════════════════════════════ */
+
 function createOption(value) {
-  const option = document.createElement("option");
-  option.value = value;
-  option.textContent = value;
-  return option;
+  const o = document.createElement("option");
+  o.value = value; o.textContent = value;
+  return o;
 }
 
-function populateSelect(selectEl, values) {
-  for (const value of values) {
-    selectEl.appendChild(createOption(value));
-  }
+function populateSelect(sel, values) {
+  for (const v of values) sel.appendChild(createOption(v));
 }
 
-function facetKeys(mapObj) {
-  return Object.keys(mapObj || {});
-}
-
-function renderStats(summary) {
-  const stats = [
-    ["Patients", summary.total_patients],
-    ["Encounters", summary.total_encounters],
-    ["Known Allergies", summary.known_allergy_count],
-    ["Organizations", facetKeys(summary.organization_counts).length],
-    ["Practitioners", facetKeys(summary.practitioner_counts).length],
-  ];
-
-  els.stats.innerHTML = "";
-  for (const [k, v] of stats) {
-    const div = document.createElement("div");
-    div.className = "stat";
-    div.innerHTML = `<p class="k">${k}</p><p class="v">${v}</p>`;
-    els.stats.appendChild(div);
-  }
-}
-
-function populateFilters(summary) {
-  populateSelect(els.city, facetKeys(summary.city_counts));
-  populateSelect(els.province, facetKeys(summary.province_counts));
-  populateSelect(els.sexGender, facetKeys(summary.sex_gender_counts));
-  populateSelect(els.ethnicity, facetKeys(summary.ethnicity_counts));
-  populateSelect(els.organization, facetKeys(summary.organization_counts));
-  populateSelect(els.practitioner, facetKeys(summary.practitioner_counts));
-  populateSelect(els.encounterType, facetKeys(summary.encounter_type_counts));
-  populateSelect(els.setting, facetKeys(summary.setting_counts));
-}
+function facetKeys(m) { return Object.keys(m || {}); }
 
 function toText(list, fallback = "-") {
-  if (!Array.isArray(list) || list.length === 0) return fallback;
+  if (!Array.isArray(list) || !list.length) return fallback;
   return list.join("; ");
 }
 
 function maskText(value, masked) {
-  const text = value || "-";
-  if (!masked) return text;
-  return text.replace(/[A-Za-z0-9]/g, "*");
+  const t = value || "-";
+  return masked ? t.replace(/[A-Za-z0-9]/g, "*") : t;
 }
 
 function applyMaskClasses(root, masked) {
-  const nodes = root.querySelectorAll(".sensitive");
-  for (const node of nodes) {
-    node.classList.toggle("masked", masked);
+  for (const n of root.querySelectorAll(".sensitive")) n.classList.toggle("masked", masked);
+}
+
+function escapeHtml(v) {
+  return String(v).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+}
+
+function truncate(v, max = 280) {
+  if (!v) return "";
+  return v.length <= max ? v : v.slice(0, max - 1).trim() + "…";
+}
+
+
+/* ═══════════════════════════════════════════════
+   Nav Stats
+   ═══════════════════════════════════════════════ */
+
+function renderNavStats(summary) {
+  els.navStats.innerHTML = `
+    <div class="nav-stat-group"><div class="nav-stat">${summary.total_patients}</div><div class="nav-stat-label">Patients</div></div>
+    <div class="nav-stat-group"><div class="nav-stat">${summary.total_encounters}</div><div class="nav-stat-label">Encounters</div></div>
+  `;
+}
+
+
+/* ═══════════════════════════════════════════════
+   Patient List (Middle Panel)
+   ═══════════════════════════════════════════════ */
+
+function rowForPatient(patient) {
+  const row = document.createElement("div");
+  row.className = "patient-row";
+  if (state.selectedPatient && state.selectedPatient.id === patient.id) {
+    row.classList.add("selected");
+  }
+
+  const initials = (patient.name || "?").split(" ").map((w) => w[0]).join("").slice(0, 2);
+
+  const allergyChip = patient.known_allergy
+    ? `<span class="patient-row-chip warn">Allergy</span>`
+    : `<span class="patient-row-chip ok">No allergy</span>`;
+
+  row.innerHTML = `
+    <div class="patient-row-avatar">${escapeHtml(initials)}</div>
+    <div class="patient-row-info">
+      <div class="patient-row-name">${escapeHtml(patient.name)}</div>
+      <div class="patient-row-detail">${escapeHtml(patient.sex_gender || "Unknown")} · ${patient.age ?? "?"} yrs · ${escapeHtml(patient.location?.city || "Unknown")}</div>
+      <div class="patient-row-chips">
+        ${allergyChip}
+        ${patient.search_score ? `<span class="patient-row-chip">Score ${patient.search_score}</span>` : ""}
+      </div>
+    </div>
+    <span class="patient-row-count">${patient.encounter_count || 0}</span>
+  `;
+
+  row.addEventListener("click", () => selectPatient(patient));
+  return row;
+}
+
+function renderPatientList() {
+  els.patientList.innerHTML = "";
+  els.resultMeta.textContent = `${state.filtered.length} of ${state.summary?.total_patients ?? state.filtered.length} patients`;
+
+  if (!state.filtered.length) {
+    els.patientList.innerHTML = `<div class="list-empty">No patients match your filters.</div>`;
+    return;
+  }
+
+  for (const p of state.filtered) {
+    els.patientList.appendChild(rowForPatient(p));
   }
 }
 
-function recentEncounterReasons(patient) {
-  const items = (patient.encounters || [])
-    .slice()
-    .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
-    .slice(0, 2)
-    .map((enc) => `${enc.date || ""}: ${enc.reason_for_visit || enc.title || "Visit"}`);
-  return items.length ? items.join(" | ") : "-";
-}
 
-function cardForPatient(patient) {
-  const frag = els.cardTemplate.content.cloneNode(true);
+/* ═══════════════════════════════════════════════
+   Detail Panel (Right Panel)
+   ═══════════════════════════════════════════════ */
+
+function selectPatient(patient) {
+  state.selectedPatient = patient;
+
+  // Update list selection and scroll into view
+  for (const row of els.patientList.querySelectorAll(".patient-row")) {
+    row.classList.remove("selected");
+  }
+  const rows = els.patientList.querySelectorAll(".patient-row");
+  const idx = state.filtered.indexOf(patient);
+  if (idx >= 0 && rows[idx]) {
+    rows[idx].classList.add("selected");
+    rows[idx].scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  // Show detail panel
+  els.detailEmpty.classList.add("hidden");
+  els.detailContent.classList.remove("hidden");
+
   const revealed = state.revealAll || state.revealedIds.has(patient.id);
   const masked = !revealed;
 
-  frag.querySelector(".name").textContent = patient.name;
-  frag.querySelector(".meta").textContent = `${patient.sex_gender || "Unknown"} | ${patient.ethnicity || "Unknown"}`;
+  els.detailPatientName.textContent = patient.name || "Patient";
+  els.detailPatientMeta.textContent = `${patient.sex_gender || "Unknown"} · ${patient.ethnicity || "Unknown"} · ${patient.age ?? "?"} years · ${patient.encounter_count || 0} encounters`;
+  els.detailProblems.textContent = toText(patient.sections?.problem_list);
+  els.detailAllergies.textContent = maskText(toText(patient.sections?.allergies), masked);
+  els.detailMeds.textContent = maskText(toText(patient.sections?.medications), masked);
+  els.detailOrgs.textContent = toText(patient.organizations);
 
-  const chipsEl = frag.querySelector(".chips");
-  const chips = [
-    `${patient.age ?? "?"} years`,
-    `${patient.location?.city || "Unknown"}, ${patient.location?.province || ""}`.trim(),
-    `${patient.encounter_count || 0} encounters`,
-    patient.known_allergy ? "Known allergy" : "No known allergy",
-  ];
+  els.detailAllergies.classList.toggle("masked", masked);
+  els.detailMeds.classList.toggle("masked", masked);
 
-  for (const text of chips) {
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    if (text.includes("Known allergy")) chip.classList.add("warn");
-    if (text.includes("No known allergy")) chip.classList.add("ok");
-    chip.textContent = text;
-    chipsEl.appendChild(chip);
-  }
+  // Render encounters
+  const encounters = (patient.encounters || [])
+    .slice()
+    .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
 
-  if (patient.search_score) {
-    const rel = document.createElement("span");
-    rel.className = "chip";
-    rel.textContent = `Relevance ${patient.search_score}`;
-    chipsEl.appendChild(rel);
-  }
-
-  if (patient.matched_fields?.length) {
-    const match = document.createElement("span");
-    match.className = "chip";
-    match.textContent = `Matched: ${patient.matched_fields.join(", ")}`;
-    chipsEl.appendChild(match);
-  }
-
-  frag.querySelector(".dob").textContent = maskText(patient.date_of_birth, masked);
-  frag.querySelector(".address").textContent = maskText(patient.address, masked);
-  frag.querySelector(".allergies").textContent = maskText(toText(patient.sections?.allergies), masked);
-  frag.querySelector(".meds").textContent = maskText(toText(patient.sections?.medications), masked);
-  frag.querySelector(".problem-list").textContent = toText(patient.sections?.problem_list);
-  frag.querySelector(".plan").textContent = toText(patient.sections?.plan_of_care);
-  frag.querySelector(".orgs").textContent = toText(patient.organizations);
-  frag.querySelector(".practs").textContent = toText(patient.practitioners);
-  frag.querySelector(".last-encounter").textContent = patient.last_encounter_date || "-";
-  frag.querySelector(".enc-reasons").textContent = maskText(recentEncounterReasons(patient), masked);
-
-  applyMaskClasses(frag, masked);
-
-  const eye = frag.querySelector(".eye-btn");
-  eye.setAttribute("aria-pressed", String(revealed));
-  eye.addEventListener("click", () => {
-    if (state.revealedIds.has(patient.id)) {
-      state.revealedIds.delete(patient.id);
-    } else {
-      state.revealedIds.add(patient.id);
-    }
-    renderResults();
-  });
-
-  const viewBtn = frag.querySelector(".view-encounters-btn");
-  viewBtn.addEventListener("click", () => openEncounterDialog(patient));
-
-  return frag;
+  els.detailEncounterList.innerHTML = encounters
+    .map((enc) => renderEncounterItem(enc, masked))
+    .join("");
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function truncate(value, max = 280) {
-  if (!value) return "";
-  if (value.length <= max) return value;
-  return `${value.slice(0, max - 1).trim()}…`;
-}
+// Toggle reveal for selected patient
+els.detailRevealBtn.addEventListener("click", () => {
+  if (!state.selectedPatient) return;
+  const id = state.selectedPatient.id;
+  if (state.revealedIds.has(id)) state.revealedIds.delete(id);
+  else state.revealedIds.add(id);
+  selectPatient(state.selectedPatient);
+});
 
 function renderEncounterItem(encounter, masked) {
   const summary = encounter.summary || {};
@@ -225,9 +249,6 @@ function renderEncounterItem(encounter, masked) {
 
   const clinicalText = maskText(truncate(summary.clinical_summary || fullAssessment || fullPlan, 320) || "-", masked);
   const planText = maskText(truncate(summary.plan_summary || fullPlan, 260) || "-", masked);
-  const safeClinical = escapeHtml(clinicalText);
-  const safePlan = escapeHtml(planText);
-  const safeReason = escapeHtml(maskText(reason, masked));
   const safeObjectiveList = objectiveHighlights
     .map((line) => `<li>${escapeHtml(maskText(line, masked))}</li>`)
     .join("");
@@ -239,16 +260,16 @@ function renderEncounterItem(encounter, masked) {
           <h4>${escapeHtml(encounter.title || "Encounter")}</h4>
           <p>${escapeHtml([encounter.date, encounter.type, encounter.setting].filter(Boolean).join(" · "))}</p>
         </div>
-        <span class="chip">${escapeHtml(encounter.time || "Time n/a")}</span>
+        <span class="chip">${escapeHtml(encounter.time || "")}</span>
       </div>
       <div class="encounter-summary">
-        <p><strong>Reason:</strong> ${safeReason}</p>
-        <p><strong>Clinical Summary:</strong> ${safeClinical}</p>
-        <p><strong>Plan Summary:</strong> ${safePlan}</p>
+        <p><strong>Reason:</strong> ${escapeHtml(maskText(reason, masked))}</p>
+        <p><strong>Clinical:</strong> ${escapeHtml(clinicalText)}</p>
+        <p><strong>Plan:</strong> ${escapeHtml(planText)}</p>
       </div>
       ${safeObjectiveList ? `<ul class="encounter-objective">${safeObjectiveList}</ul>` : ""}
       <details>
-        <summary>View Full Note Sections</summary>
+        <summary>Full Note Sections</summary>
         <p><strong>Subjective:</strong> ${escapeHtml(maskText(truncate(fullSubjective, 1400) || "-", masked))}</p>
         <p><strong>Objective:</strong> ${escapeHtml(maskText(truncate(fullObjective, 1400) || "-", masked))}</p>
         <p><strong>Assessment:</strong> ${escapeHtml(maskText(truncate(fullAssessment, 1400) || "-", masked))}</p>
@@ -258,12 +279,14 @@ function renderEncounterItem(encounter, masked) {
   `;
 }
 
+
+/* ═══════════════════════════════════════════════
+   Encounter Dialog (citation deep-links only)
+   ═══════════════════════════════════════════════ */
+
 function openEncounterDialog(patient, highlight) {
-  // highlight: string (date) or { date?, section?, preview? }
   if (typeof highlight === "string") highlight = { date: highlight };
 
-  // Auto-reveal sensitive data when opening from a citation source,
-  // otherwise the text is masked (asterisks) and highlighting can't work.
   if (highlight && (highlight.section || highlight.preview)) {
     state.revealedIds.add(patient.id);
   }
@@ -271,49 +294,30 @@ function openEncounterDialog(patient, highlight) {
   const revealed = state.revealAll || state.revealedIds.has(patient.id);
   const masked = !revealed;
 
-  // Clear any leftover highlights from a previous citation deep-link
-  for (const mark of els.encounterDialog.querySelectorAll("mark.cite-highlight")) {
-    mark.replaceWith(mark.textContent);
-  }
-  for (const el of els.encounterDialog.querySelectorAll(".highlight-section")) {
-    el.classList.remove("highlight-section");
-  }
-  for (const el of els.encounterDialog.querySelectorAll(".highlighted")) {
-    el.classList.remove("highlighted");
-  }
+  for (const mark of els.encounterDialog.querySelectorAll("mark.cite-highlight")) mark.replaceWith(mark.textContent);
+  for (const el of els.encounterDialog.querySelectorAll(".highlight-section")) el.classList.remove("highlight-section");
+  for (const el of els.encounterDialog.querySelectorAll(".highlighted")) el.classList.remove("highlighted");
 
   els.dialogPatientName.textContent = patient.name || "Patient";
-  els.dialogPatientMeta.textContent = `${patient.sex_gender || "Unknown"} | ${patient.ethnicity || "Unknown"} | ${patient.encounter_count || 0} encounters`;
+  els.dialogPatientMeta.textContent = `${patient.sex_gender || "Unknown"} · ${patient.ethnicity || "Unknown"} · ${patient.encounter_count || 0} encounters`;
   els.dialogProblemList.textContent = toText(patient.sections?.problem_list);
   els.dialogAllergies.textContent = maskText(toText(patient.sections?.allergies), masked);
   els.dialogMeds.textContent = maskText(toText(patient.sections?.medications), masked);
-
   els.dialogAllergies.classList.toggle("masked", masked);
   els.dialogMeds.classList.toggle("masked", masked);
 
-  const encounters = (patient.encounters || [])
-    .slice()
-    .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const encounters = (patient.encounters || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  els.dialogEncounterList.innerHTML = encounters.map((enc) => renderEncounterItem(enc, masked)).join("");
 
-  els.dialogEncounterList.innerHTML = encounters
-    .map((enc) => renderEncounterItem(enc, masked))
-    .join("");
+  if (typeof els.encounterDialog.showModal === "function") els.encounterDialog.showModal();
+  else els.encounterDialog.setAttribute("open", "open");
 
-  if (typeof els.encounterDialog.showModal === "function") {
-    els.encounterDialog.showModal();
-  } else {
-    els.encounterDialog.setAttribute("open", "open");
-  }
-
-  if (highlight) {
-    setTimeout(() => applyDialogHighlight(highlight), 150);
-  }
+  if (highlight) setTimeout(() => applyDialogHighlight(highlight), 150);
 }
 
 function applyDialogHighlight(hl) {
   const { date, section, preview, query } = hl;
 
-  // -- Patient-summary source (no encounter date) --
   if (!date && section) {
     const sectionMap = {
       "problem list": els.dialogProblemList,
@@ -331,22 +335,16 @@ function applyDialogHighlight(hl) {
     return;
   }
 
-  // -- Encounter source --
   if (!date) return;
-  const item = [...els.dialogEncounterList.querySelectorAll(".encounter-item")]
-    .find((el) => el.dataset.date === date);
+  const item = [...els.dialogEncounterList.querySelectorAll(".encounter-item")].find((el) => el.dataset.date === date);
   if (!item) return;
 
   item.classList.add("highlighted");
-
-  // Always expand details so we can search the full text
   const details = item.querySelector("details");
   if (details) details.open = true;
 
-  // 1. Try text-level highlighting across the ENTIRE encounter item
   const textFound = tryHighlightText(item, query, preview);
 
-  // 2. If text matching missed, apply section-level highlighting as fallback
   if (!textFound && section) {
     const sectionLower = section.toLowerCase();
     for (const p of item.querySelectorAll("p")) {
@@ -360,38 +358,24 @@ function applyDialogHighlight(hl) {
     }
   }
 
-  // 3. Scroll to the most specific highlighted element
-  const scrollTarget = item.querySelector(".cite-highlight")
-    || item.querySelector(".highlight-section")
-    || item;
+  const scrollTarget = item.querySelector(".cite-highlight") || item.querySelector(".highlight-section") || item;
   setTimeout(() => scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
 }
 
 function tryHighlightText(container, query, preview) {
-  if (!container) return false;
-  if (!query && !preview) return false;
+  if (!container || (!query && !preview)) return false;
 
-  // Build candidates — prioritise the search query, then fall back to preview fragments
   const candidates = [];
-
-  // 1. The original query/keyword is the most relevant thing to highlight
   if (query) {
     const q = query.trim();
     candidates.push(q);
-    // Also try individual multi-word sub-phrases (e.g. "blurred vision" from "patients with blurred vision")
-    // Skip very short stop-words
     const words = q.split(/\s+/).filter((w) => w.length >= 4);
     if (words.length > 2) {
-      // Try sliding windows of 2-3 words
       for (let len = Math.min(words.length, 3); len >= 2; len--) {
-        for (let i = 0; i <= words.length - len; i++) {
-          candidates.push(words.slice(i, i + len).join(" "));
-        }
+        for (let i = 0; i <= words.length - len; i++) candidates.push(words.slice(i, i + len).join(" "));
       }
     }
   }
-
-  // 2. Preview fragments as fallback — strip leading/trailing ellipsis
   if (preview) {
     const raw = preview.trim().replace(/^…+/, "").replace(/…+$/, "").trim();
     const phrases = raw.split(/[.;,\n]+/).map((p) => p.trim()).filter((p) => p.length >= 8);
@@ -399,30 +383,17 @@ function tryHighlightText(container, query, preview) {
     candidates.push(...phrases.slice(0, 4));
   }
 
-  // Deduplicate and filter
   const seen = new Set();
-  const unique = candidates.filter((c) => {
-    if (!c || c.length < 4) return false;
-    const key = c.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  const unique = candidates.filter((c) => { if (!c || c.length < 4) return false; const k = c.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
 
   for (const candidate of unique) {
     const search = candidate.toLowerCase();
-
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
       const node = walker.currentNode;
-      // Skip text inside <summary> or <strong> labels
       if (node.parentElement.closest("summary, strong")) continue;
-
-      const text = node.textContent.toLowerCase();
-      const idx = text.indexOf(search);
+      const idx = node.textContent.toLowerCase().indexOf(search);
       if (idx < 0) continue;
-
-      // Found a match — split and wrap with <mark>
       const matchNode = idx > 0 ? node.splitText(idx) : node;
       if (candidate.length < matchNode.textContent.length) matchNode.splitText(candidate.length);
       const mark = document.createElement("mark");
@@ -435,51 +406,37 @@ function tryHighlightText(container, query, preview) {
   return false;
 }
 
-function updateResultHeader() {
-  const total = state.summary?.total_patients ?? state.filtered.length;
-  els.resultTitle.textContent = `Patients (${state.filtered.length})`;
-  els.resultMeta.textContent = `Showing ${state.filtered.length} of ${total} profiles`;
-}
 
-function renderResults() {
-  els.results.innerHTML = "";
-  updateResultHeader();
+/* ═══════════════════════════════════════════════
+   Filters & Refresh
+   ═══════════════════════════════════════════════ */
 
-  if (!state.filtered.length) {
-    const p = document.createElement("p");
-    p.className = "panel empty";
-    p.textContent = "No patients match your current filters.";
-    els.results.appendChild(p);
-    return;
-  }
-
-  for (const patient of state.filtered) {
-    els.results.appendChild(cardForPatient(patient));
-  }
+function populateFilters(summary) {
+  populateSelect(els.city, facetKeys(summary.city_counts));
+  populateSelect(els.province, facetKeys(summary.province_counts));
+  populateSelect(els.sexGender, facetKeys(summary.sex_gender_counts));
+  populateSelect(els.ethnicity, facetKeys(summary.ethnicity_counts));
+  populateSelect(els.organization, facetKeys(summary.organization_counts));
+  populateSelect(els.practitioner, facetKeys(summary.practitioner_counts));
+  populateSelect(els.encounterType, facetKeys(summary.encounter_type_counts));
+  populateSelect(els.setting, facetKeys(summary.setting_counts));
 }
 
 function currentParams() {
-  const params = new URLSearchParams({
+  return new URLSearchParams({
     q: els.q.value.trim(),
-    city: els.city.value,
-    province: els.province.value,
-    sex_gender: els.sexGender.value,
-    ethnicity: els.ethnicity.value,
+    city: els.city.value, province: els.province.value,
+    sex_gender: els.sexGender.value, ethnicity: els.ethnicity.value,
     known_allergy: els.knownAllergy.value,
-    organization: els.organization.value,
-    practitioner: els.practitioner.value,
-    encounter_type: els.encounterType.value,
-    setting: els.setting.value,
-    min_age: els.minAge.value,
-    max_age: els.maxAge.value,
-    date_from: els.dateFrom.value,
-    date_to: els.dateTo.value,
+    organization: els.organization.value, practitioner: els.practitioner.value,
+    encounter_type: els.encounterType.value, setting: els.setting.value,
+    min_age: els.minAge.value, max_age: els.maxAge.value,
+    date_from: els.dateFrom.value, date_to: els.dateTo.value,
   });
-  return params;
 }
 
 async function fetchFilteredPatients() {
-  const resp = await fetch(`/api/patients?${currentParams().toString()}`);
+  const resp = await fetch(`/api/patients?${currentParams()}`);
   const payload = await resp.json();
   state.filtered = payload.results || [];
 }
@@ -489,11 +446,13 @@ function scheduleRefresh() {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(async () => {
     await fetchFilteredPatients();
-    renderResults();
+    renderPatientList();
+    updateFilterBadges();
   }, 140);
 }
 
-// Elasticsearch keyword search (triggered by @prefix)
+/* ── Elasticsearch keyword search (@prefix) ── */
+
 function hideEsDropdown() {
   if (els.esDropdown) {
     els.esDropdown.classList.remove("visible");
@@ -513,25 +472,23 @@ function renderEsResults(data) {
   if (data.error === "es_unavailable") {
     els.resultMeta.textContent = "Elasticsearch unavailable";
     state.filtered = [];
-    renderResults();
+    renderPatientList();
     return;
   }
 
   if (data.multi_bucket) {
-    // Matches from multiple buckets - show all matching patients
     const matchedNames = new Set(data.results.map(r => r.full_name));
     state.filtered = state.data.filter(p => matchedNames.has(p.name));
-    renderResults();
+    renderPatientList();
     return;
   }
 
   if (!data.results || data.results.length === 0) {
     state.filtered = [];
-    renderResults();
+    renderPatientList();
     return;
   }
 
-  // Single bucket with results - filter patient cards
   const bucketLabel = {
     first_name: "First Name",
     last_name: "Last Name",
@@ -541,7 +498,6 @@ function renderEsResults(data) {
   const matchedNames = new Set(data.results.map(r => r.full_name));
   state.filtered = state.data.filter(p => matchedNames.has(p.name));
 
-  // Add matched field info to filtered patients for display
   for (const patient of state.filtered) {
     const match = data.results.find(r => r.full_name === patient.name);
     if (match) {
@@ -549,7 +505,7 @@ function renderEsResults(data) {
     }
   }
 
-  renderResults();
+  renderPatientList();
 }
 
 async function performEsSearch(query) {
@@ -570,46 +526,30 @@ async function performEsSearch(query) {
 function handleSearchInput() {
   const value = els.q.value;
 
-  // Check for @ prefix
   if (value.startsWith("@")) {
-    const query = value.slice(1); // Remove @ prefix
-
-    // Clear any pending regular search
+    const query = value.slice(1);
     clearTimeout(refreshTimer);
 
-    // Minimum 2 chars before querying
     if (query.length < 2) {
       hideEsDropdown();
-      // Show all patients when query is too short
       state.filtered = state.data;
-      // Clear any matched_fields from previous ES search
-      for (const p of state.filtered) {
-        delete p.matched_fields;
-      }
-      renderResults();
+      for (const p of state.filtered) { delete p.matched_fields; }
+      renderPatientList();
       return;
     }
 
-    // Debounce 0.5s, don't send if in-flight
     clearTimeout(state.esDebounceTimer);
     state.esDebounceTimer = setTimeout(() => {
-      if (!state.esSearchInFlight) {
-        performEsSearch(query);
-      }
+      if (!state.esSearchInFlight) performEsSearch(query);
     }, 500);
   } else {
-    // Regular search - hide ES dropdown and do normal search
     hideEsDropdown();
     clearTimeout(state.esDebounceTimer);
-    // Clear any matched_fields from previous ES search
-    for (const p of state.data) {
-      delete p.matched_fields;
-    }
+    for (const p of state.data) { delete p.matched_fields; }
     scheduleRefresh();
   }
 }
 
-// Close ES dropdown when clicking outside
 document.addEventListener("click", (e) => {
   if (els.esDropdown && !els.esDropdown.contains(e.target) && e.target !== els.q) {
     hideEsDropdown();
@@ -618,22 +558,39 @@ document.addEventListener("click", (e) => {
 
 function clearAllFilters() {
   for (const el of inputs) {
-    if (el.tagName === "SELECT") {
-      el.selectedIndex = 0;
-      continue;
-    }
+    if (el.tagName === "SELECT") { el.selectedIndex = 0; continue; }
     el.value = "";
   }
   els.knownAllergy.value = "all";
   scheduleRefresh();
 }
 
+function updateFilterBadges() {
+  const badges = [];
+  if (els.city.value) badges.push(els.city.value);
+  if (els.province.value) badges.push(els.province.value);
+  if (els.sexGender.value) badges.push(els.sexGender.value);
+  if (els.ethnicity.value) badges.push(els.ethnicity.value);
+  if (els.knownAllergy.value !== "all") badges.push(`Allergy: ${els.knownAllergy.value}`);
+  if (els.organization.value) badges.push(els.organization.value);
+  if (els.practitioner.value) badges.push(els.practitioner.value);
+  if (els.encounterType.value) badges.push(els.encounterType.value);
+  if (els.setting.value) badges.push(els.setting.value);
+
+  els.activeFilterBadges.innerHTML = badges.map((b) =>
+    `<span class="filter-badge">${escapeHtml(b)}</span>`
+  ).join("");
+}
+
+
+/* ═══════════════════════════════════════════════
+   Boot
+   ═══════════════════════════════════════════════ */
+
 async function boot() {
   const [summaryResp, allPatientsResp] = await Promise.all([
-    fetch("/api/summary"),
-    fetch("/api/patients"),
+    fetch("/api/summary"), fetch("/api/patients"),
   ]);
-
   const summary = await summaryResp.json();
   const allPatients = await allPatientsResp.json();
 
@@ -641,14 +598,13 @@ async function boot() {
   state.data = allPatients.results || [];
   state.filtered = state.data;
 
-  renderStats(summary);
+  renderNavStats(summary);
   populateFilters(summary);
-  renderResults();
+  renderPatientList();
 
   for (const input of inputs) {
     if (!input) continue;
     if (input === els.q) {
-      // Special handling for search input to detect @ prefix
       input.addEventListener("input", handleSearchInput);
       input.addEventListener("change", handleSearchInput);
     } else {
@@ -661,23 +617,25 @@ async function boot() {
     state.revealAll = !state.revealAll;
     els.toggleAllMask.setAttribute("aria-pressed", String(state.revealAll));
     els.toggleAllMask.querySelector(".toggle-label").textContent =
-      state.revealAll ? "Hide All Sensitive Data" : "Reveal All Sensitive Data";
-    renderResults();
+      state.revealAll ? "Hide sensitive data" : "Reveal sensitive data";
+    if (state.selectedPatient) selectPatient(state.selectedPatient);
   });
 
   els.clearFilters.addEventListener("click", clearAllFilters);
 }
 
-boot().catch((error) => {
-  console.error(error);
-  els.results.innerHTML = `<p class="panel empty">Failed to load explorer data: ${error.message}</p>`;
+boot().catch((err) => {
+  console.error(err);
+  els.patientList.innerHTML = `<div class="list-empty">Failed to load: ${err.message}</div>`;
 });
 
-/* ───── Chat Widget ───── */
+
+/* ═══════════════════════════════════════════════
+   Ask AI (Integrated bottom bar)
+   ═══════════════════════════════════════════════ */
 
 const chat = {
-  toggle: document.getElementById("chatToggle"),
-  panel: document.getElementById("chatPanel"),
+  bar: document.getElementById("askAiBar"),
   messages: document.getElementById("chatMessages"),
   form: document.getElementById("chatForm"),
   input: document.getElementById("chatInput"),
@@ -776,23 +734,12 @@ function updateMentionsFromInput() {
   renderMentions();
 }
 
-function chatOpen() {
-  return chat.panel.classList.contains("open");
-}
-
-function toggleChat() {
-  const opening = !chatOpen();
-  chat.panel.classList.toggle("open", opening);
-  chat.panel.setAttribute("aria-hidden", String(!opening));
-  chat.toggle.classList.toggle("open", opening);
-  if (opening) chat.input.focus();
-}
-
 function addBubble(cls, html) {
   const div = document.createElement("div");
   div.className = `chat-bubble ${cls}`;
   div.innerHTML = html;
   chat.messages.appendChild(div);
+  chat.bar.classList.add("has-messages");
   chat.messages.scrollTop = chat.messages.scrollHeight;
   return div;
 }
@@ -815,7 +762,7 @@ function showTyping() {
   const el = document.createElement("div");
   el.className = "chat-typing";
   el.id = "chatTyping";
-  el.innerHTML = "<span></span><span></span><span></span>";
+  el.innerHTML = `<div class="chat-typing-orb"></div><span class="chat-typing-text">Thinking</span>`;
   chat.messages.appendChild(el);
   chat.messages.scrollTop = chat.messages.scrollHeight;
 }
@@ -828,23 +775,114 @@ function hideTyping() {
 function clearChat() {
   chat.pendingSources = [];
   closeMentions();
+  chat.bar.classList.remove("has-messages");
   chat.messages.innerHTML = `
     <div class="chat-welcome">
-      <p>Hi! I can search patient records, answer clinical questions, and generate charts from encounter data.</p>
+      <p>Ask about patient records, conditions, or metrics.</p>
       <p class="chat-welcome-hint">Try: "Which patients have diabetes?" or "Chart A1C for Eleanor Voss"</p>
     </div>`;
 }
 
+/* ── Thinking Container ── */
+
+function getOrCreateThinking() {
+  let container = chat.messages.querySelector(".thinking-container:last-of-type");
+  if (container && !container.dataset.done) return container;
+
+  container = document.createElement("div");
+  container.className = "thinking-container expanded";
+  container.innerHTML = `
+    <div class="thinking-header">
+      <div class="thinking-orb active"></div>
+      <div class="thinking-label"><span class="thinking-text">Working</span></div>
+      <svg class="thinking-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </div>
+    <div class="thinking-steps"></div>
+  `;
+  container.querySelector(".thinking-header").addEventListener("click", () => container.classList.toggle("expanded"));
+  chat.messages.appendChild(container);
+  chat.bar.classList.add("has-messages");
+  chat.messages.scrollTop = chat.messages.scrollHeight;
+  return container;
+}
+
+function addThinkingStep(type, text) {
+  const container = getOrCreateThinking();
+  const steps = container.querySelector(".thinking-steps");
+  const step = document.createElement("div");
+  step.className = `thinking-step ${type}`;
+  step.innerHTML = `<span class="thinking-step-icon"></span><span class="thinking-step-text">${escapeHtml(text)}</span>`;
+  steps.appendChild(step);
+  const label = container.querySelector(".thinking-text");
+  if (type === "tool" || type === "search") label.textContent = "Searching";
+  else if (type === "chart") label.textContent = "Generating chart";
+  else label.textContent = "Working";
+  chat.messages.scrollTop = chat.messages.scrollHeight;
+}
+
+function finalizeThinking() {
+  const container = chat.messages.querySelector(".thinking-container:not([data-done])");
+  if (!container) return;
+  container.dataset.done = "true";
+  container.classList.remove("expanded");
+  const orb = container.querySelector(".thinking-orb");
+  if (orb) orb.classList.remove("active");
+  const label = container.querySelector(".thinking-text");
+  const count = container.querySelectorAll(".thinking-step").length;
+  if (label) label.textContent = count > 0 ? `${count} step${count > 1 ? "s" : ""} completed` : "Done";
+}
+
+/* ── Action Buttons ── */
+
+function makeActionBtn(svg, labelText, onClick) {
+  const btn = document.createElement("button");
+  btn.className = "chat-action-btn";
+  btn.type = "button";
+  btn.innerHTML = svg + (labelText ? `<span class="btn-label">${labelText}</span>` : "");
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
+function createActionButtons(bubble) {
+  const bar = document.createElement("div");
+  bar.className = "chat-actions";
+
+  const copyBtn = makeActionBtn(
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`,
+    "Copy",
+    () => {
+      navigator.clipboard.writeText(bubble.textContent || bubble.innerText).then(() => {
+        copyBtn.querySelector(".btn-label").textContent = "Copied!";
+        copyBtn.classList.add("active");
+        setTimeout(() => { copyBtn.querySelector(".btn-label").textContent = "Copy"; copyBtn.classList.remove("active"); }, 1500);
+      });
+    }
+  );
+  bar.appendChild(copyBtn);
+
+  const upBtn = makeActionBtn(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/><path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>`, null, () => { upBtn.classList.toggle("active"); downBtn.classList.remove("active"); });
+  upBtn.title = "Helpful";
+  bar.appendChild(upBtn);
+
+  const downBtn = makeActionBtn(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/><path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/></svg>`, null, () => { downBtn.classList.toggle("active"); upBtn.classList.remove("active"); });
+  downBtn.title = "Not helpful";
+  bar.appendChild(downBtn);
+
+  return bar;
+}
+
+/* ── Send & SSE ── */
+
 async function sendMessage(text) {
   if (chat.busy || !text.trim()) return;
   chat.busy = true;
-  chat.form.querySelector("button").disabled = true;
+  chat.form.querySelector("button[type=submit]").disabled = true;
 
-  // Remove welcome message on first send
   const welcome = chat.messages.querySelector(".chat-welcome");
   if (welcome) welcome.remove();
 
   addBubble("user", escapeHtml(text));
+  chat.bar.classList.add("has-messages", "expanded");
   showTyping();
 
   try {
@@ -853,12 +891,7 @@ async function sendMessage(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text }),
     });
-
-    if (!resp.ok) {
-      hideTyping();
-      addBubble("error", `Server error (${resp.status})`);
-      return;
-    }
+    if (!resp.ok) { hideTyping(); addBubble("error", `Server error (${resp.status})`); return; }
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -868,19 +901,14 @@ async function sendMessage(text) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
 
       let eventType = "";
       for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith("data: ") && eventType) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            handleSSE(eventType, data);
-          } catch { /* skip malformed */ }
+        if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+        else if (line.startsWith("data: ") && eventType) {
+          try { handleSSE(eventType, JSON.parse(line.slice(6))); } catch {}
           eventType = "";
         }
       }
@@ -891,7 +919,7 @@ async function sendMessage(text) {
   } finally {
     hideTyping();
     chat.busy = false;
-    chat.form.querySelector("button").disabled = false;
+    chat.form.querySelector("button[type=submit]").disabled = false;
     chat.input.focus();
   }
 }
@@ -899,64 +927,69 @@ async function sendMessage(text) {
 function handleSSE(type, data) {
   switch (type) {
     case "status":
-      hideTyping();
-      addBubble("status", escapeHtml(data.text || ""));
-      showTyping();
-      break;
+      hideTyping(); addThinkingStep("status", data.text || "Processing..."); showTyping(); break;
     case "tool_call": {
       hideTyping();
-      const label = data.tool === "chart"
-        ? `Generating chart for ${data.patient} — ${data.metric}`
-        : `Searching: ${data.query || data.keyword || ""}`;
-      addBubble("tool-call", `&#9881; ${escapeHtml(label)}`);
-      showTyping();
-      break;
+      const stepType = data.tool === "chart" ? "chart" : "search";
+      const label = data.tool === "chart" ? `Chart: ${data.patient} — ${data.metric}` : `Search: ${data.query || data.keyword || ""}`;
+      addThinkingStep(stepType, label); showTyping(); break;
     }
     case "sources":
-      chat.pendingSources = chat.pendingSources.concat(data.sources || []);
-      break;
+      chat.pendingSources = chat.pendingSources.concat(data.sources || []); break;
     case "chart":
-      hideTyping();
-      addChart(data.b64, `${data.metric} — ${data.patient}`);
-      showTyping();
-      break;
+      hideTyping(); addChart(data.b64, `${data.metric} — ${data.patient}`); showTyping(); break;
     case "reply": {
-      hideTyping();
+      hideTyping(); finalizeThinking();
       const sources = chat.pendingSources;
-      const bubble = addBubble("assistant", formatReply(data.text || "", sources));
+      const group = document.createElement("div");
+      group.className = "chat-response-group";
+      const bubble = document.createElement("div");
+      bubble.className = "chat-bubble assistant";
+      bubble.innerHTML = formatReply(data.text || "", sources);
+      group.appendChild(bubble);
+      group.appendChild(createActionButtons(bubble));
+      chat.messages.appendChild(group);
       attachCitationClicks(bubble, sources);
       linkPatientNames(bubble);
-      if (sources.length) {
-        appendCitationBar(bubble, sources);
-      }
+      if (sources.length) appendSourceCards(sources);
       chat.pendingSources = [];
+      chat.messages.scrollTop = chat.messages.scrollHeight;
       break;
     }
-    case "open_timeline":
-      openTimelineFromChat(data.patient_name);
+    case "open_timeline": {
+      const p = state.data.find((pt) => pt.name.toLowerCase() === (data.patient_name || "").toLowerCase());
+      if (p) selectPatient(p);
       break;
-    case "error":
-      hideTyping();
-      addBubble("error", escapeHtml(data.text || "Unknown error"));
-      break;
-    case "done":
-      hideTyping();
-      break;
+    }
+    case "error": hideTyping(); addBubble("error", escapeHtml(data.text || "Unknown error")); break;
+    case "done": hideTyping(); finalizeThinking(); break;
   }
 }
 
 function formatReply(text, sources) {
-  let html = escapeHtml(text)
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\n/g, "<br>");
+  let html = escapeHtml(text);
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/(?:^|\n)((?:[-*] .+(?:\n|$))+)/g, (block) => {
+    const items = block.trim().split("\n").map((l) => `<li>${l.replace(/^[-*]\s+/, "")}</li>`).join("");
+    return `<ul>${items}</ul>`;
+  });
+  html = html.replace(/(?:^|\n)((?:\d+\.\s+.+(?:\n|$))+)/g, (block) => {
+    const items = block.trim().split("\n").map((l) => `<li>${l.replace(/^\d+\.\s+/, "")}</li>`).join("");
+    return `<ol>${items}</ol>`;
+  });
+  html = html.replace(/\n\n+/g, "</p><p>");
+  html = html.replace(/\n/g, "<br>");
+  html = `<p>${html}</p>`;
+  html = html.replace(/<p>\s*<\/p>/g, "");
+  html = html.replace(/<p>(<[uo]l>)/g, "$1");
+  html = html.replace(/(<\/[uo]l>)<\/p>/g, "$1");
 
   if (sources && sources.length) {
     html = html.replace(/\[(\d+)\]/g, (match, num) => {
       const idx = parseInt(num) - 1;
       if (idx >= 0 && idx < sources.length) {
         const src = sources[idx];
-        const tip = `${src.patient_name} · ${src.section}${src.encounter_date ? " (" + src.encounter_date + ")" : ""}`;
-        return `<button class="citation-ref" data-src-idx="${idx}" title="${escapeHtml(tip)}">${match}</button>`;
+        return `<button class="citation-ref" data-src-idx="${idx}" title="${escapeHtml(src.patient_name + " · " + src.section)}"><span class="ref-num">${num}</span> ${escapeHtml(src.patient_name || "Source")}</button>`;
       }
       return match;
     });
@@ -968,77 +1001,60 @@ function attachCitationClicks(bubble, sources) {
   bubble.querySelectorAll(".citation-ref").forEach((btn) => {
     btn.addEventListener("click", () => {
       const src = sources[parseInt(btn.dataset.srcIdx)];
-      if (src) openTimelineFromChat(src.patient_name, {
-        date: src.encounter_date,
-        section: src.section,
-        preview: src.preview,
-        query: src.query,
-      });
+      if (src) openTimelineFromChat(src.patient_name, { date: src.encounter_date, section: src.section, preview: src.preview, query: src.query });
     });
   });
 }
 
-function appendCitationBar(bubble, sources) {
-  const bar = document.createElement("div");
-  bar.className = "chat-citations";
-
-  const label = document.createElement("span");
-  label.className = "citations-label";
-  label.textContent = "Sources:";
-  bar.appendChild(label);
+function appendSourceCards(sources) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "chat-sources";
 
   const seen = new Set();
+  const unique = [];
   for (const src of sources) {
     const key = `${src.patient_name}|${src.encounter_date || ""}|${src.section}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const pill = document.createElement("button");
-    pill.className = "citation-pill";
-    pill.type = "button";
-
-    const num = document.createElement("span");
-    num.className = "citation-num";
-    num.textContent = src.index;
-    pill.appendChild(num);
-
-    const label = src.encounter_date
-      ? ` ${src.patient_name} · ${src.section} (${src.encounter_date})`
-      : ` ${src.patient_name} · ${src.section}`;
-    pill.appendChild(document.createTextNode(label));
-
-    pill.addEventListener("click", () => {
-      openTimelineFromChat(src.patient_name, {
-        date: src.encounter_date,
-        section: src.section,
-        preview: src.preview,
-        query: src.query,
-      });
-    });
-    bar.appendChild(pill);
+    if (seen.has(key)) continue; seen.add(key); unique.push(src);
   }
-  chat.messages.insertBefore(bar, bubble.nextSibling);
+
+  const header = document.createElement("div");
+  header.className = "sources-header";
+  header.innerHTML = `<span class="sources-header-label">Sources</span><span class="sources-count">${unique.length}</span><svg class="sources-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`;
+  header.addEventListener("click", () => wrapper.classList.toggle("expanded"));
+  wrapper.appendChild(header);
+
+  const list = document.createElement("div");
+  list.className = "sources-list";
+  for (const src of unique) {
+    const card = document.createElement("div");
+    card.className = "source-card";
+    card.innerHTML = `
+      <span class="source-num">${src.index}</span>
+      <div class="source-info">
+        <div class="source-title">${escapeHtml(src.patient_name || "Source")}</div>
+        <div class="source-meta">${escapeHtml([src.section, src.encounter_date].filter(Boolean).join(" · "))}</div>
+        ${src.preview ? `<div class="source-excerpt">${escapeHtml(src.preview)}</div>` : ""}
+      </div>
+      <span class="source-arrow">\u2197</span>
+    `;
+    card.addEventListener("click", () => openTimelineFromChat(src.patient_name, { date: src.encounter_date, section: src.section, preview: src.preview, query: src.query }));
+    list.appendChild(card);
+  }
+  wrapper.appendChild(list);
+  chat.messages.appendChild(wrapper);
   chat.messages.scrollTop = chat.messages.scrollHeight;
 }
 
 function linkPatientNames(bubble) {
   const names = state.data.map((p) => p.name).filter(Boolean);
   if (!names.length) return;
-
   const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
   const replacements = [];
-
   while (walker.nextNode()) {
-    const textNode = walker.currentNode;
-    // Skip text already inside a button/link
-    if (textNode.parentElement.closest("button, a, .citation-ref")) continue;
-    for (const name of names) {
-      if (textNode.textContent.includes(name)) {
-        replacements.push({ textNode, name });
-      }
-    }
+    const tn = walker.currentNode;
+    if (tn.parentElement.closest("button, a, .citation-ref")) continue;
+    for (const name of names) { if (tn.textContent.includes(name)) replacements.push({ textNode: tn, name }); }
   }
-
   for (const { textNode, name } of replacements) {
     const parts = textNode.textContent.split(name);
     const frag = document.createDocumentFragment();
@@ -1047,8 +1063,11 @@ function linkPatientNames(bubble) {
         const btn = document.createElement("button");
         btn.className = "patient-link";
         btn.textContent = name;
-        btn.title = `Open encounter timeline for ${name}`;
-        btn.addEventListener("click", () => openTimelineFromChat(name));
+        btn.title = `Select ${name}`;
+        btn.addEventListener("click", () => {
+          const p = state.data.find((pt) => pt.name === name);
+          if (p) selectPatient(p);
+        });
         frag.appendChild(btn);
       }
       if (part) frag.appendChild(document.createTextNode(part));
@@ -1070,33 +1089,95 @@ function openTimelineFromChat(patientName, highlight) {
   const nameKey = normalizePatientKey(patientName);
   const patient = state.data.find((p) => normalizePatientKey(p.name) === nameKey)
     || state.data.find((p) => normalizePatientKey(p.name).includes(nameKey) || nameKey.includes(normalizePatientKey(p.name)));
-  if (!patient) {
-    addBubble("error", `Patient "${escapeHtml(patientName)}" not found in loaded data.`);
-    return;
+  if (!patient) { addBubble("error", `Patient "${escapeHtml(patientName)}" not found.`); return; }
+
+  // Auto-reveal sensitive data when navigating from citation
+  if (highlight && (highlight.section || highlight.preview)) {
+    state.revealedIds.add(patient.id);
   }
-  openEncounterDialog(patient, highlight || undefined);
+
+  selectPatient(patient);
+
+  if (highlight && (highlight.date || highlight.section)) {
+    setTimeout(() => applyDetailHighlight(highlight), 120);
+  }
 }
 
-chat.toggle.addEventListener("click", toggleChat);
+function applyDetailHighlight(hl) {
+  const { date, section, preview, query } = hl;
+
+  // Clear any previous highlights in the detail panel
+  for (const mark of els.detailEncounterList.querySelectorAll("mark.cite-highlight")) mark.replaceWith(mark.textContent);
+  for (const el of els.detailEncounterList.querySelectorAll(".highlight-section")) el.classList.remove("highlight-section");
+  for (const el of els.detailEncounterList.querySelectorAll(".highlighted")) el.classList.remove("highlighted");
+  // Also clear highlights in the summary area
+  const summaryEl = document.getElementById("detailSummary");
+  if (summaryEl) {
+    for (const mark of summaryEl.querySelectorAll("mark.cite-highlight")) mark.replaceWith(mark.textContent);
+    for (const el of summaryEl.querySelectorAll(".highlight-section")) el.classList.remove("highlight-section");
+  }
+
+  // If no date, try to highlight a top-level section (problem list, allergies, meds)
+  if (!date && section) {
+    const sectionMap = {
+      "problem list": els.detailProblems,
+      "allergies": els.detailAllergies,
+      "medications": els.detailMeds,
+      "medication summary": els.detailMeds,
+    };
+    const key = Object.keys(sectionMap).find((k) => section.toLowerCase().includes(k));
+    if (key) {
+      const el = sectionMap[key];
+      el.closest("div")?.classList.add("highlight-section");
+      tryHighlightText(el, query, preview);
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    return;
+  }
+
+  if (!date) return;
+
+  // Find the matching encounter item in the detail panel
+  const item = [...els.detailEncounterList.querySelectorAll(".encounter-item")].find((el) => el.dataset.date === date);
+  if (!item) return;
+
+  item.classList.add("highlighted");
+  const details = item.querySelector("details");
+  if (details) details.open = true;
+
+  const textFound = tryHighlightText(item, query, preview);
+
+  if (!textFound && section) {
+    const sectionLower = section.toLowerCase();
+    for (const p of item.querySelectorAll("p")) {
+      const strong = p.querySelector("strong");
+      if (!strong) continue;
+      const label = strong.textContent.toLowerCase().replace(/[:\s]+$/g, "");
+      if (label === sectionLower || label.includes(sectionLower) || sectionLower.includes(label)) {
+        p.classList.add("highlight-section");
+        break;
+      }
+    }
+  }
+
+  const scrollTarget = item.querySelector(".cite-highlight") || item.querySelector(".highlight-section") || item;
+  setTimeout(() => scrollTarget.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+}
+
 chat.clear.addEventListener("click", clearChat);
 
-// Close encounter dialog when clicking outside the dialog panel.
+// Close encounter dialog when clicking outside the dialog panel
 els.encounterDialog.addEventListener("click", (e) => {
   if (!els.encounterDialog.open) return;
   const shell = els.encounterDialog.querySelector(".dialog-shell");
   if (!shell) return;
   const rect = shell.getBoundingClientRect();
   const clickedOutside =
-    e.clientX < rect.left ||
-    e.clientX > rect.right ||
-    e.clientY < rect.top ||
-    e.clientY > rect.bottom;
+    e.clientX < rect.left || e.clientX > rect.right ||
+    e.clientY < rect.top || e.clientY > rect.bottom;
   if (clickedOutside) {
-    if (typeof els.encounterDialog.close === "function") {
-      els.encounterDialog.close();
-    } else {
-      els.encounterDialog.removeAttribute("open");
-    }
+    if (typeof els.encounterDialog.close === "function") els.encounterDialog.close();
+    else els.encounterDialog.removeAttribute("open");
   }
 });
 
