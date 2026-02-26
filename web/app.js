@@ -634,6 +634,8 @@ boot().catch((err) => {
    Ask AI (Integrated bottom bar)
    ═══════════════════════════════════════════════ */
 
+const appShell = document.querySelector(".app-shell");
+
 const chat = {
   bar: document.getElementById("askAiBar"),
   messages: document.getElementById("chatMessages"),
@@ -641,6 +643,7 @@ const chat = {
   input: document.getElementById("chatInput"),
   mentionList: document.getElementById("chatMentionList"),
   clear: document.getElementById("chatClear"),
+  collapse: document.getElementById("chatCollapse"),
   busy: false,
   pendingSources: [],
   mentionState: {
@@ -734,12 +737,26 @@ function updateMentionsFromInput() {
   renderMentions();
 }
 
+/* ── Chat panel open/collapse ── */
+
+function isChatOpen() {
+  return appShell.classList.contains("chat-open");
+}
+
+function openChatPanel() {
+  appShell.classList.add("chat-open");
+  chat.input.focus();
+}
+
+function collapseChatPanel() {
+  appShell.classList.remove("chat-open");
+}
+
 function addBubble(cls, html) {
   const div = document.createElement("div");
   div.className = `chat-bubble ${cls}`;
   div.innerHTML = html;
   chat.messages.appendChild(div);
-  chat.bar.classList.add("has-messages");
   chat.messages.scrollTop = chat.messages.scrollHeight;
   return div;
 }
@@ -775,7 +792,7 @@ function hideTyping() {
 function clearChat() {
   chat.pendingSources = [];
   closeMentions();
-  chat.bar.classList.remove("has-messages");
+  collapseChatPanel();
   chat.messages.innerHTML = `
     <div class="chat-welcome">
       <p>Ask about patient records, conditions, or metrics.</p>
@@ -801,7 +818,6 @@ function getOrCreateThinking() {
   `;
   container.querySelector(".thinking-header").addEventListener("click", () => container.classList.toggle("expanded"));
   chat.messages.appendChild(container);
-  chat.bar.classList.add("has-messages");
   chat.messages.scrollTop = chat.messages.scrollHeight;
   return container;
 }
@@ -881,8 +897,8 @@ async function sendMessage(text) {
   const welcome = chat.messages.querySelector(".chat-welcome");
   if (welcome) welcome.remove();
 
+  openChatPanel();
   addBubble("user", escapeHtml(text));
-  chat.bar.classList.add("has-messages", "expanded");
   showTyping();
 
   try {
@@ -1165,6 +1181,7 @@ function applyDetailHighlight(hl) {
 }
 
 chat.clear.addEventListener("click", clearChat);
+chat.collapse.addEventListener("click", collapseChatPanel);
 
 // Close encounter dialog when clicking outside the dialog panel
 els.encounterDialog.addEventListener("click", (e) => {
@@ -1222,4 +1239,10 @@ chat.input.addEventListener("keydown", (e) => {
 
 chat.input.addEventListener("blur", () => {
   setTimeout(() => closeMentions(), 120);
+});
+
+// Re-open chat panel when clicking input if there are existing messages
+chat.input.addEventListener("focus", () => {
+  const hasMessages = !chat.messages.querySelector(".chat-welcome");
+  if (hasMessages && !isChatOpen()) openChatPanel();
 });

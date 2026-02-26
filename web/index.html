@@ -179,35 +179,47 @@
         </div>
       </div>
 
-      <!-- Ask AI Bar (always visible at bottom of right panel) -->
-      <div class="ask-ai-bar" id="askAiBar">
-        <div class="ask-ai-messages" id="chatMessages">
-          <div class="chat-welcome">
-            <p>Ask about patient records, conditions, or metrics.</p>
-            <p class="chat-welcome-hint">Try: "Which patients have diabetes?" or "Chart A1C for Eleanor Voss"</p>
-          </div>
-        </div>
-        <form id="chatForm" class="ask-ai-input">
-          <div class="ask-ai-orb">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 3c-4.97 0-9 3.18-9 7.1 0 2.34 1.52 4.42 3.86 5.72L5.5 20l3.96-2.07A10.6 10.6 0 0 0 12 18.2c4.97 0 9-3.18 9-7.1S16.97 3 12 3z"/>
-            </svg>
-          </div>
-          <input id="chatInput" type="text" placeholder="Ask AI anything about patients..." autocomplete="off" />
-          <button type="submit" class="ask-ai-send" aria-label="Send">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-            </svg>
-          </button>
-          <button type="button" id="chatClear" class="ask-ai-clear" title="Clear conversation">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-            </svg>
-          </button>
-          <div id="chatMentionList" class="chat-mention-list" hidden></div>
-        </form>
-      </div>
     </section>
+
+    <!-- Ask AI Panel (4th grid child — overlays bottom of detail by default, expands to own column) -->
+    <div class="ask-ai-bar" id="askAiBar">
+      <header class="ask-ai-header" id="askAiHeader">
+        <div class="ask-ai-header-left">
+          <div class="ask-ai-header-orb"></div>
+          <span>Clinical AI Assistant</span>
+        </div>
+        <button type="button" id="chatCollapse" class="ask-ai-collapse" title="Collapse chat">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"/>
+          </svg>
+        </button>
+      </header>
+      <div class="ask-ai-messages" id="chatMessages">
+        <div class="chat-welcome">
+          <p>Ask about patient records, conditions, or metrics.</p>
+          <p class="chat-welcome-hint">Try: "Which patients have diabetes?" or "Chart A1C for Eleanor Voss"</p>
+        </div>
+      </div>
+      <form id="chatForm" class="ask-ai-input">
+        <div class="ask-ai-orb">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3c-4.97 0-9 3.18-9 7.1 0 2.34 1.52 4.42 3.86 5.72L5.5 20l3.96-2.07A10.6 10.6 0 0 0 12 18.2c4.97 0 9-3.18 9-7.1S16.97 3 12 3z"/>
+          </svg>
+        </div>
+        <input id="chatInput" type="text" placeholder="Ask AI anything about patients..." autocomplete="off" />
+        <button type="submit" class="ask-ai-send" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+        <button type="button" id="chatClear" class="ask-ai-clear" title="Clear conversation">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+        </button>
+        <div id="chatMentionList" class="chat-mention-list" hidden></div>
+      </form>
+    </div>
   </div>
 
   <!-- Encounter Dialog (kept for citation deep-links from chat) -->
